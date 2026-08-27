@@ -1,0 +1,26 @@
+{# Rendered into Commerce's order edit screen through the `cp.commerce.order.edit.details` hook. #}
+<div class="meta">
+    <h3 style="margin-bottom: 6px;">{{ "Pointz"|t('pointz') }}</h3>
+
+    <table class="data fullwidth">
+        <tbody>
+            {% for transaction in transactions %}
+                <tr>
+                    <td>
+                        {{ transaction.kindLabel }}
+                        {% if transaction.status == 'pending' %}<span class="light">({{ "pending"|t('pointz') }})</span>{% endif %}
+                        {% if transaction.note %}<div class="light smalltext">{{ transaction.note }}</div>{% endif %}
+                    </td>
+                    <td class="rightalign">
+                        <strong>{{ transaction.amount > 0 ? '+' : '' }}{{ plugin.redemption.format(transaction.amount) }}</strong>
+                        <div class="light smalltext">{{ transaction.isCredit() ? settings.creditLabel : settings.label(transaction.amount) }}</div>
+                    </td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    {% if balanceUrl %}
+        <p style="margin-top: 8px;"><a href="{{ balanceUrl }}">{{ "See this customer’s balance"|t('pointz') }}</a></p>
+    {% endif %}
+</div>

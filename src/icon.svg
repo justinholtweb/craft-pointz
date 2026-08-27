@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- Rounded tile: 22.44% radius, the family's shared silhouette -->
+  <rect x="0" y="0" width="100" height="100" rx="22.44" fill="#C0821B"/>
+  <!-- A ring the star sits inside: a loyalty card's stamp, not a sheriff's badge -->
+  <circle cx="50" cy="50" r="38" fill="none" stroke="#FEFEFE" stroke-width="3.5" opacity="0.55"/>
+  <path fill="#FEFEFE" d="M50 20 L57.64 39.48 L78.53 40.73 L62.37 54.02 L67.63 74.27 L50 63 L32.37 74.27 L37.63 54.02 L21.47 40.73 L42.36 39.48 Z"/>
+</svg>

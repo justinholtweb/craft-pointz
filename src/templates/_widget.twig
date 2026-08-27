@@ -1,0 +1,31 @@
+<div class="flex" style="gap: 24px; flex-wrap: wrap;">
+    <div>
+        <div class="light smalltext">{{ "Unredeemed"|t('pointz') }}</div>
+        <div style="font-size: 24px;">{{ plugin.redemption.format(totals.points) }}</div>
+        <div class="light smalltext">{{ settings.pointsLabelPlural }}</div>
+    </div>
+    <div>
+        <div class="light smalltext">{{ "Worth"|t('pointz') }}</div>
+        <div style="font-size: 24px;">{{ plugin.redemption.formatMoney(value, store.id) }}</div>
+        <div class="light smalltext">{{ "at {rate} per unit"|t('pointz', { rate: settings.pointsPerUnit }) }}</div>
+    </div>
+    {% if totals.pendingPoints > 0 %}
+        <div>
+            <div class="light smalltext">{{ "Still on hold"|t('pointz') }}</div>
+            <div style="font-size: 24px;">{{ plugin.redemption.format(totals.pendingPoints) }}</div>
+            <div class="light smalltext">{{ plugin.redemption.formatMoney(pendingValue, store.id) }}</div>
+        </div>
+    {% endif %}
+    {% if totals.credit > 0 %}
+        <div>
+            <div class="light smalltext">{{ settings.creditLabel|title }}</div>
+            <div style="font-size: 24px;">{{ plugin.redemption.formatMoney(totals.credit, store.id) }}</div>
+        </div>
+    {% endif %}
+    <div>
+        <div class="light smalltext">{{ "Customers holding a balance"|t('pointz') }}</div>
+        <div style="font-size: 24px;">{{ totals.customers }}</div>
+    </div>
+</div>
+
+<p style="margin-top: 12px;"><a href="{{ url('pointz/balances', { store: store.handle }) }}">{{ "See balances"|t('pointz') }}</a></p>

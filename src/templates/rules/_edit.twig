@@ -1,0 +1,292 @@
+{% extends "_layouts/cp" %}
+{% import "_includes/forms" as forms %}
+
+{% set selectedSubnavItem = 'rules' %}
+{% set fullPageForm = true %}
+{% set crumbs = [
+    { label: "Pointz"|t('pointz'), url: url('pointz') },
+    { label: "Earning rules"|t('pointz'), url: url('pointz/rules/' ~ store.handle) }
+] %}
+
+{# This screen is rendered by Pointz's own controller, not by `settingsHtml()`, so nothing
+   namespaces its inputs and the field names here are the names that post. #}
+
+{% block content %}
+    <input type="hidden" name="action" value="pointz/rules/save">
+    {{ redirectInput('pointz/rules/' ~ store.handle) }}
+    <input type="hidden" name="storeId" value="{{ store.id }}">
+    {% if rule.id %}<input type="hidden" name="id" value="{{ rule.id }}">{% endif %}
+
+    {{ forms.textField({
+        first: true,
+        label: "Name"|t('pointz'),
+        instructions: "What this rule is called in the control panel — and, if a template prints it, on the site."|t('pointz'),
+        id: 'name',
+        name: 'name',
+        value: rule.name,
+        required: true,
+        errors: rule.getErrors('name')
+    }) }}
+
+    {{ forms.textField({
+        label: "Handle"|t('pointz'),
+        id: 'handle',
+        name: 'handle',
+        class: 'code',
+        autocorrect: false,
+        autocapitalize: false,
+        value: rule.handle,
+        required: true,
+        errors: rule.getErrors('handle')
+    }) }}
+
+    {{ forms.selectField({
+        label: "Earned for"|t('pointz'),
+        id: 'event',
+        name: 'event',
+        options: eventOptions,
+        value: rule.event,
+        errors: rule.getErrors('event')
+    }) }}
+
+    {% if isPro %}
+        {{ forms.selectField({
+            label: "Applies"|t('pointz'),
+            instructions: "A per-line-item rule runs once for every matching product in the order, which is how “double points on outdoor gear” is written."|t('pointz'),
+            id: 'scope',
+            name: 'scope',
+            options: scopeOptions,
+            value: rule.scope,
+            errors: rule.getErrors('scope')
+        }) }}
+
+        {{ forms.selectField({
+            label: "Awards"|t('pointz'),
+            id: 'currency',
+            name: 'currency',
+            options: currencyOptions,
+            value: rule.currency,
+            errors: rule.getErrors('currency')
+        }) }}
+    {% endif %}
+
+    {{ forms.selectField({
+        label: "Calculated as"|t('pointz'),
+        id: 'calculation',
+        name: 'calculation',
+        options: calculationOptions,
+        value: rule.calculation,
+        toggle: true,
+        targetPrefix: 'calc-'
+    }) }}
+
+    <div id="calc-ratio" class="{{ rule.calculation == 'ratio' ? '' : 'hidden' }}">
+        {{ forms.selectField({
+            label: "Based on"|t('pointz'),
+            instructions: "Which figure the rate is applied to. A line-item rule can only use a line item's own figures."|t('pointz'),
+            id: 'basis',
+            name: 'basis',
+            options: basisOptions,
+            value: rule.basis,
+            errors: rule.getErrors('basis')
+        }) }}
+    </div>
+
+    {{ forms.textField({
+        type: 'number',
+        step: 'any',
+        label: "Rate"|t('pointz'),
+        instructions: "For a rate: how much is awarded per unit of the figure above. For a fixed award: the whole amount."|t('pointz'),
+        id: 'rate',
+        name: 'rate',
+        value: rule.rate,
+        size: 10,
+        errors: rule.getErrors('rate')
+    }) }}
+
+    {{ forms.selectField({
+        label: "Rounding"|t('pointz'),
+        instructions: "Points are whole things, so a rate that lands on 2.5 has to go somewhere. Down is the default because nobody complains about the number they were shown."|t('pointz'),
+        id: 'rounding',
+        name: 'rounding',
+        options: roundingOptions,
+        value: rule.rounding
+    }) }}
+
+    {% if isPro %}
+        {{ forms.textField({
+            type: 'number',
+            step: 'any',
+            label: "Multiplier"|t('pointz'),
+            instructions: "Applied on top of the rate. Leave at 1 normally, and raise it for a promotion so the rate itself never has to be edited back afterwards."|t('pointz'),
+            id: 'multiplier',
+            name: 'multiplier',
+            value: rule.multiplier,
+            size: 6,
+            errors: rule.getErrors('multiplier')
+        }) }}
+
+        <hr>
+        <h2>{{ "Limits"|t('pointz') }}</h2>
+
+        {{ forms.textField({
+            type: 'number',
+            step: 'any',
+            label: "Minimum award"|t('pointz'),
+            instructions: "Raise anything this rule awards to at least this. Empty for no floor."|t('pointz'),
+            id: 'minAward',
+            name: 'minAward',
+            value: rule.minAward,
+            size: 8,
+            errors: rule.getErrors('minAward')
+        }) }}
+
+        {{ forms.textField({
+            type: 'number',
+            step: 'any',
+            label: "Maximum award"|t('pointz'),
+            instructions: "The most this rule can award on one order. A per-line-item rule shares this across its lines, so the cap is a cap on the rule rather than on each product."|t('pointz'),
+            id: 'maxAward',
+            name: 'maxAward',
+            value: rule.maxAward,
+            size: 8,
+            errors: rule.getErrors('maxAward')
+        }) }}
+
+        {{ forms.textField({
+            type: 'number',
+            step: 'any',
+            label: "Maximum per customer"|t('pointz'),
+            instructions: "Across every order, inside the period below. Empty for no cap."|t('pointz'),
+            id: 'maxPerUser',
+            name: 'maxPerUser',
+            value: rule.maxPerUser,
+            size: 8,
+            errors: rule.getErrors('maxPerUser')
+        }) }}
+
+        {{ forms.selectField({
+            label: "Counted"|t('pointz'),
+            id: 'maxPerUserPeriod',
+            name: 'maxPerUserPeriod',
+            options: periodOptions,
+            value: rule.maxPerUserPeriod
+        }) }}
+
+        {{ forms.textField({
+            type: 'number',
+            label: "Expires after"|t('pointz'),
+            instructions: "Overrides the site-wide expiry for value this rule awards. Empty follows the settings."|t('pointz'),
+            id: 'expireAfterDays',
+            name: 'expireAfterDays',
+            value: rule.expireAfterDays,
+            size: 6,
+            unit: "days"|t('pointz'),
+            errors: rule.getErrors('expireAfterDays')
+        }) }}
+
+        {{ forms.lightswitchField({
+            label: "First order only"|t('pointz'),
+            instructions: "Only awards on a customer's first completed order in this store."|t('pointz'),
+            id: 'firstOrderOnly',
+            name: 'firstOrderOnly',
+            on: rule.firstOrderOnly
+        }) }}
+
+        {{ forms.lightswitchField({
+            label: "Stop after this one"|t('pointz'),
+            instructions: "No later rule runs on an order this one matched. How an exclusive promotion is written."|t('pointz'),
+            id: 'stopProcessing',
+            name: 'stopProcessing',
+            on: rule.stopProcessing
+        }) }}
+
+        <hr>
+        <h2>{{ "Campaign window"|t('pointz') }}</h2>
+
+        {{ forms.dateTimeField({
+            label: "Starts"|t('pointz'),
+            id: 'dateFrom',
+            name: 'dateFrom',
+            value: rule.dateFrom,
+            errors: rule.getErrors('dateFrom')
+        }) }}
+
+        {{ forms.dateTimeField({
+            label: "Ends"|t('pointz'),
+            id: 'dateTo',
+            name: 'dateTo',
+            value: rule.dateTo,
+            errors: rule.getErrors('dateTo')
+        }) }}
+
+        <hr>
+        <h2>{{ "Conditions"|t('pointz') }}</h2>
+        <p class="light">{{ "An empty condition matches everything."|t('pointz') }}</p>
+
+        {{ forms.field({
+            label: "Matching orders"|t('pointz'),
+            instructions: "Checked against the finished order, so order status, total paid and payment gateway are all fair game here."|t('pointz')
+        }, rule.getOrderCondition().getBuilderHtml()) }}
+
+        {{ forms.field({
+            label: "Matching customers"|t('pointz'),
+            instructions: "How a rule is limited to a customer group."|t('pointz')
+        }, rule.getUserCondition().getBuilderHtml()) }}
+
+        <div id="condition-purchasable" class="{{ rule.scope == 'lineItem' ? '' : 'hidden' }}">
+            {{ forms.field({
+                label: "Matching products"|t('pointz'),
+                instructions: "Only used by a per-line-item rule. A purchasable that is not an element cannot be matched by a condition, so a conditional rule skips it."|t('pointz')
+            }, rule.getPurchasableCondition().getBuilderHtml()) }}
+        </div>
+    {% endif %}
+
+    {{ forms.lightswitchField({
+        label: "Enabled"|t('pointz'),
+        instructions: "A new rule starts switched off. Nothing is awarded until somebody has read the numbers."|t('pointz'),
+        id: 'enabled',
+        name: 'enabled',
+        on: rule.enabled
+    }) }}
+{% endblock %}
+
+{% if isNew %}
+    {% js %}
+        new Craft.HandleGenerator('#name', '#handle');
+    {% endjs %}
+{% endif %}
+
+{% js %}
+// The basis options depend on the scope, and offering a combination validation would reject is a
+// way of making a rule that silently awards nothing.
+(function() {
+    var scope = document.getElementById('scope');
+    var basis = document.getElementById('basis');
+    var purchasable = document.getElementById('condition-purchasable');
+
+    if (!scope || !basis) {
+        return;
+    }
+
+    scope.addEventListener('change', function() {
+        if (purchasable) {
+            purchasable.classList.toggle('hidden', scope.value !== 'lineItem');
+        }
+
+        Craft.sendActionRequest('POST', 'pointz/rules/bases', { data: { scope: scope.value } })
+            .then(function(response) {
+                var current = basis.value;
+                basis.innerHTML = '';
+
+                response.data.options.forEach(function(option) {
+                    var element = document.createElement('option');
+                    element.value = option.value;
+                    element.textContent = option.label;
+                    element.selected = option.value === current;
+                    basis.appendChild(element);
+                });
+            });
+    });
+})();
+{% endjs %}

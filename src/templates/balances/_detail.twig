@@ -1,0 +1,178 @@
+{% extends "_layouts/cp" %}
+{% import "_includes/forms" as forms %}
+
+{% set selectedSubnavItem = 'balances' %}
+{% set crumbs = [
+    { label: "Pointz"|t('pointz'), url: url('pointz') },
+    { label: "Balances"|t('pointz'), url: url('pointz/balances', { store: store.handle }) }
+] %}
+
+{% block content %}
+    <div class="flex" style="margin-bottom: 20px; gap: 28px; flex-wrap: wrap;">
+        <div>
+            <div class="light smalltext">{{ settings.pointsLabelPlural|title }}</div>
+            <div style="font-size: 26px;" id="pointz-points">{{ plugin.redemption.format(account.pointsBalance) }}</div>
+            <div class="light smalltext">{{ "worth {amount}"|t('pointz', { amount: plugin.redemption.formatMoney(plugin.redemption.valueForPoints(account.pointsBalance), store.id) }) }}</div>
+        </div>
+        {% if account.pendingPoints > 0 %}
+            <div>
+                <div class="light smalltext">{{ "Pending"|t('pointz') }}</div>
+                <div style="font-size: 26px;">{{ plugin.redemption.format(account.pendingPoints) }}</div>
+            </div>
+        {% endif %}
+        {% if plugin.isPro() %}
+            <div>
+                <div class="light smalltext">{{ settings.creditLabel|title }}</div>
+                <div style="font-size: 26px;">{{ plugin.redemption.formatMoney(account.creditBalance, store.id) }}</div>
+            </div>
+        {% endif %}
+        <div>
+            <div class="light smalltext">{{ "Lifetime"|t('pointz') }}</div>
+            <div style="font-size: 26px;">{{ plugin.redemption.format(account.lifetimePoints) }}</div>
+        </div>
+    </div>
+
+    {% if canAdjust %}
+        <div class="pane" style="margin-bottom: 20px;">
+            <h2>{{ "Move this balance"|t('pointz') }}</h2>
+            <p class="light">
+                {{ "A positive amount grants, a negative one takes away. Both go through the ledger, so what lands here expires and reverses exactly like something earned."|t('pointz') }}
+            </p>
+
+            {# Posted with Craft.sendActionRequest, not a nested <form>: this page is already a
+               form, and a second one inside it corrupts the first. #}
+            {{ forms.textField({
+                type: 'number',
+                step: 'any',
+                label: "Amount"|t('pointz'),
+                id: 'pointz-amount',
+                name: 'pointz-amount',
+                size: 10
+            }) }}
+
+            {% if plugin.isPro() %}
+                {{ forms.selectField({
+                    label: "Currency"|t('pointz'),
+                    id: 'pointz-currency',
+                    name: 'pointz-currency',
+                    options: [
+                        { value: 'points', label: settings.pointsLabelPlural|title },
+                        { value: 'credit', label: settings.creditLabel|title }
+                    ]
+                }) }}
+            {% endif %}
+
+            {{ forms.textField({
+                label: "Note"|t('pointz'),
+                instructions: "Shown in the ledger. Say why, so the next person does not have to guess."|t('pointz'),
+                id: 'pointz-note',
+                name: 'pointz-note'
+            }) }}
+
+            <button type="button" class="btn submit" id="pointz-adjust">{{ "Move it"|t('pointz') }}</button>
+            <button type="button" class="btn" id="pointz-recalculate">{{ "Rebuild from the ledger"|t('pointz') }}</button>
+        </div>
+    {% endif %}
+
+    {% if lots|length %}
+        <h2>{{ "Where the balance sits"|t('pointz') }}</h2>
+        <p class="light">{{ "Spending takes from whatever expires soonest, so this is the order it will go in."|t('pointz') }}</p>
+        <table class="data fullwidth collapsible" style="margin-bottom: 24px;">
+            <thead>
+                <tr>
+                    <th scope="col">{{ "Remaining"|t('pointz') }}</th>
+                    <th scope="col">{{ "Of"|t('pointz') }}</th>
+                    <th scope="col">{{ "Earned"|t('pointz') }}</th>
+                    <th scope="col">{{ "Expires"|t('pointz') }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for lot in lots %}
+                    <tr>
+                        <th scope="row">{{ plugin.redemption.format(lot.remaining) }}</th>
+                        <td class="light">{{ plugin.redemption.format(lot.amount) }}</td>
+                        <td class="light">{{ lot.dateCreated|datetime('short') }}</td>
+                        <td>{{ lot.dateExpires ? lot.dateExpires|date('short') : "Never"|t('pointz') }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% endif %}
+
+    <h2>{{ "History"|t('pointz') }}</h2>
+
+    {% if transactions|length %}
+        <table class="data fullwidth collapsible">
+            <thead>
+                <tr>
+                    <th scope="col">{{ "When"|t('pointz') }}</th>
+                    <th scope="col">{{ "What"|t('pointz') }}</th>
+                    <th scope="col">{{ "Amount"|t('pointz') }}</th>
+                    <th scope="col">{{ "Balance"|t('pointz') }}</th>
+                    <th scope="col">{{ "Order"|t('pointz') }}</th>
+                    <th scope="col">{{ "Note"|t('pointz') }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for transaction in transactions %}
+                    <tr>
+                        <td class="light">{{ transaction.dateCreated|datetime('short') }}</td>
+                        <td>
+                            {{ transaction.kindLabel }}
+                            {% if transaction.status == 'pending' %}<span class="light">({{ "pending"|t('pointz') }})</span>{% endif %}
+                        </td>
+                        <td><strong>{{ transaction.amount > 0 ? '+' : '' }}{{ plugin.redemption.format(transaction.amount) }}</strong></td>
+                        <td class="light">{{ plugin.redemption.format(transaction.balanceAfter) }}</td>
+                        <td>
+                            {% set order = transaction.order %}
+                            {% if order %}<a href="{{ order.cpEditUrl }}">{{ order.reference ?: order.shortNumber }}</a>{% else %}—{% endif %}
+                        </td>
+                        <td class="light">{{ transaction.note ?: '—' }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p>{{ "Nothing has moved yet."|t('pointz') }}</p>
+    {% endif %}
+{% endblock %}
+
+{% if canAdjust %}
+    {% js %}
+    (function() {
+        var adjust = document.getElementById('pointz-adjust');
+        var recalculate = document.getElementById('pointz-recalculate');
+
+        adjust.addEventListener('click', function() {
+            var currency = document.getElementById('pointz-currency');
+
+            Craft.sendActionRequest('POST', 'pointz/balances/adjust', {
+                data: {
+                    userId: {{ user.id }},
+                    storeId: {{ store.id }},
+                    storeHandle: '{{ store.handle }}',
+                    currency: currency ? currency.value : 'points',
+                    amount: document.getElementById('pointz-amount').value,
+                    note: document.getElementById('pointz-note').value
+                }
+            }).then(function(response) {
+                Craft.cp.displayNotice(response.data.message);
+                window.location.reload();
+            }).catch(function(error) {
+                Craft.cp.displayError(error.response && error.response.data ? error.response.data.message : error);
+            });
+        });
+
+        recalculate.addEventListener('click', function() {
+            Craft.sendActionRequest('POST', 'pointz/balances/recalculate', {
+                data: { userId: {{ user.id }}, storeId: {{ store.id }} }
+            }).then(function(response) {
+                Craft.cp.displayNotice(response.data.message);
+                window.location.reload();
+            }).catch(function(error) {
+                Craft.cp.displayError(error.response && error.response.data ? error.response.data.message : error);
+            });
+        });
+    })();
+    {% endjs %}
+{% endif %}

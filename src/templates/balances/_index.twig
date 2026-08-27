@@ -1,0 +1,101 @@
+{% extends "_layouts/cp" %}
+
+{% set title = "Balances"|t('pointz') %}
+{% set selectedSubnavItem = 'balances' %}
+
+{% block content %}
+    {% if stores|length > 1 %}
+        <div class="flex" style="margin-bottom: 14px;">
+            {% for s in stores %}
+                <a class="btn{{ s.id == store.id ? ' active' : '' }}" href="{{ url('pointz/balances', { store: s.handle }) }}">{{ s.name }}</a>
+            {% endfor %}
+        </div>
+    {% endif %}
+
+    {% if totals %}
+        <div class="flex" style="margin-bottom: 18px; gap: 24px; flex-wrap: wrap;">
+            <div>
+                <div class="light smalltext">{{ "Unredeemed"|t('pointz') }}</div>
+                <div style="font-size: 22px;">{{ plugin.redemption.format(totals.points) }} <span class="light">{{ settings.pointsLabelPlural }}</span></div>
+            </div>
+            <div>
+                <div class="light smalltext">{{ "Worth"|t('pointz') }}</div>
+                <div style="font-size: 22px;">{{ plugin.redemption.formatMoney(plugin.redemption.valueForPoints(totals.points), store.id) }}</div>
+            </div>
+            {% if totals.pendingPoints > 0 %}
+                <div>
+                    <div class="light smalltext">{{ "Pending"|t('pointz') }}</div>
+                    <div style="font-size: 22px;">{{ plugin.redemption.format(totals.pendingPoints) }}</div>
+                </div>
+            {% endif %}
+            {% if plugin.isPro() %}
+                <div>
+                    <div class="light smalltext">{{ settings.creditLabel|title }}</div>
+                    <div style="font-size: 22px;">{{ plugin.redemption.formatMoney(totals.credit, store.id) }}</div>
+                </div>
+            {% endif %}
+            <div>
+                <div class="light smalltext">{{ "Customers"|t('pointz') }}</div>
+                <div style="font-size: 22px;">{{ totals.customers }}</div>
+            </div>
+        </div>
+    {% endif %}
+
+    <form method="get" action="{{ url('pointz/balances') }}" class="flex" style="margin-bottom: 14px;">
+        <input type="hidden" name="store" value="{{ store.handle }}">
+        <input type="text" class="text" name="search" value="{{ search }}" placeholder="{{ 'Search customers'|t('pointz') }}" autocomplete="off">
+        <button type="submit" class="btn">{{ "Search"|t('pointz') }}</button>
+        {% if search %}
+            <a class="btn" href="{{ url('pointz/balances', { store: store.handle }) }}">{{ "Clear"|t('pointz') }}</a>
+        {% endif %}
+    </form>
+
+    {% if rows|length %}
+        <table class="data fullwidth collapsible">
+            <thead>
+                <tr>
+                    <th scope="col">{{ "Customer"|t('pointz') }}</th>
+                    <th scope="col">{{ settings.pointsLabelPlural|title }}</th>
+                    <th scope="col">{{ "Pending"|t('pointz') }}</th>
+                    {% if plugin.isPro() %}<th scope="col">{{ settings.creditLabel|title }}</th>{% endif %}
+                    <th scope="col">{{ "Lifetime"|t('pointz') }}</th>
+                    <th scope="col">{{ "Last movement"|t('pointz') }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in rows %}
+                    <tr>
+                        <th scope="row">
+                            <a href="{{ url('pointz/balances/' ~ row.userId, { store: store.handle }) }}">
+                                {{ row.firstName or row.lastName ? (row.firstName ~ ' ' ~ row.lastName)|trim : row.username }}
+                            </a>
+                            <span class="light">{{ row.email }}</span>
+                        </th>
+                        <td><strong>{{ plugin.redemption.format(row.pointsBalance) }}</strong></td>
+                        <td class="light">{{ plugin.redemption.format(row.pendingPoints) }}</td>
+                        {% if plugin.isPro() %}
+                            <td>{{ plugin.redemption.formatMoney(row.creditBalance, store.id) }}</td>
+                        {% endif %}
+                        <td class="light">{{ plugin.redemption.format(row.lifetimePoints) }}</td>
+                        <td class="light">{{ row.dateLastActivity ? row.dateLastActivity|datetime('short') : '—' }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        {% set pages = (total / perPage)|round(0, 'ceil') %}
+        {% if pages > 1 %}
+            <nav class="flex" style="margin-top: 14px;">
+                {% if page > 1 %}
+                    <a class="btn" href="{{ url('pointz/balances', { store: store.handle, search: search, page: page - 1 }) }}">{{ "Previous"|t('pointz') }}</a>
+                {% endif %}
+                <span class="light" style="align-self: center;">{{ "Page {page} of {pages}"|t('pointz', { page: page, pages: pages }) }}</span>
+                {% if page < pages %}
+                    <a class="btn" href="{{ url('pointz/balances', { store: store.handle, search: search, page: page + 1 }) }}">{{ "Next"|t('pointz') }}</a>
+                {% endif %}
+            </nav>
+        {% endif %}
+    {% else %}
+        <p>{{ "No balances yet."|t('pointz') }}</p>
+    {% endif %}
+{% endblock %}

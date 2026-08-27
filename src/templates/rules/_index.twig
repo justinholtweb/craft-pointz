@@ -1,0 +1,117 @@
+{% extends "_layouts/cp" %}
+
+{% set title = "Earning rules"|t('pointz') %}
+{% set selectedSubnavItem = 'rules' %}
+
+{% block actionButton %}
+    {% if canAddRule %}
+        <a href="{{ newRuleUrl }}" class="btn submit add icon">{{ "New rule"|t('pointz') }}</a>
+    {% endif %}
+{% endblock %}
+
+{% block content %}
+    {% if stores|length > 1 %}
+        <div class="flex" style="margin-bottom: 14px;">
+            {% for s in stores %}
+                <a class="btn{{ s.id == store.id ? ' active' : '' }}" href="{{ url('pointz/rules/' ~ s.handle) }}">{{ s.name }}</a>
+            {% endfor %}
+        </div>
+    {% endif %}
+
+    {% if not isPro %}
+        <p class="light">
+            {{ "Pointz Lite runs one earning rule per store. Pro adds rules matched by an order, customer or product condition, per-line-item rules, campaign windows, caps and store credit."|t('pointz') }}
+        </p>
+    {% else %}
+        <p class="light">
+            {{ "Rules run top to bottom and every matching rule adds to the award. A rule with “stop after this one” set ends the run, which is how an exclusive promotion is written."|t('pointz') }}
+        </p>
+    {% endif %}
+
+    {% if rules|length %}
+        <table class="data fullwidth collapsible">
+            <thead>
+                <tr>
+                    <th scope="col">{{ "Name"|t('pointz') }}</th>
+                    <th scope="col">{{ "Earned for"|t('pointz') }}</th>
+                    <th scope="col">{{ "Awards"|t('pointz') }}</th>
+                    <th scope="col">{{ "Window"|t('pointz') }}</th>
+                    <th scope="col">{{ "Status"|t('pointz') }}</th>
+                    <th scope="col" class="thin"></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for rule in rules %}
+                    <tr data-id="{{ rule.id }}" data-name="{{ rule.name }}">
+                        <th scope="row" data-title="{{ 'Name'|t('pointz') }}">
+                            <a href="{{ rule.cpEditUrl }}">{{ rule.name }}</a>
+                            <span class="light code">{{ rule.handle }}</span>
+                        </th>
+                        <td data-title="{{ 'Earned for'|t('pointz') }}">
+                            {{ rule.events()[rule.event] ?? rule.event }}
+                            {% if rule.scope == 'lineItem' %}
+                                <span class="light">({{ "per line item"|t('pointz') }})</span>
+                            {% endif %}
+                        </td>
+                        <td data-title="{{ 'Awards'|t('pointz') }}">
+                            {% if rule.calculation == 'fixed' %}
+                                <strong>{{ rule.rate * rule.multiplier }}</strong>
+                                {{ rule.currency == 'credit' ? settings.creditLabel : settings.pointsLabelPlural }}
+                            {% else %}
+                                <strong>{{ rule.rate * rule.multiplier }}</strong>
+                                {{ "per unit of"|t('pointz') }} {{ (rule.bases()[rule.basis] ?? rule.basis)|lower }}
+                            {% endif %}
+                            {% if rule.maxAward %}
+                                <span class="light">({{ "max {n}"|t('pointz', { n: rule.maxAward }) }})</span>
+                            {% endif %}
+                        </td>
+                        <td data-title="{{ 'Window'|t('pointz') }}">
+                            {% if rule.dateFrom or rule.dateTo %}
+                                {{ rule.dateFrom ? rule.dateFrom|date('short') : '—' }} → {{ rule.dateTo ? rule.dateTo|date('short') : '—' }}
+                                {% if not rule.isInWindow() %}
+                                    <span class="light">({{ "not running"|t('pointz') }})</span>
+                                {% endif %}
+                            {% else %}
+                                <span class="light">{{ "Always"|t('pointz') }}</span>
+                            {% endif %}
+                        </td>
+                        <td data-title="{{ 'Status'|t('pointz') }}">
+                            <span class="status {{ rule.enabled ? 'green' : 'disabled' }}"></span>
+                            {{ rule.enabled ? "Enabled"|t('pointz') : "Disabled"|t('pointz') }}
+                        </td>
+                        <td class="thin">
+                            <button type="button" class="delete icon pointz-delete-rule" data-id="{{ rule.id }}" title="{{ 'Delete'|t('pointz') }}"></button>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p>{{ "No earning rules yet."|t('pointz') }}</p>
+    {% endif %}
+{% endblock %}
+
+{% js %}
+// Posted with Craft.sendActionRequest rather than a form: this table renders inside the control
+// panel's own page form, and a nested form is invalid HTML — the parser keeps the inputs and
+// drops the tag, leaving two action inputs in one form and making Save do the delete.
+document.querySelectorAll('.pointz-delete-rule').forEach(function(button) {
+    button.addEventListener('click', function() {
+        var row = button.closest('tr');
+        var name = row ? row.dataset.name : '';
+
+        if (!confirm(Craft.t('pointz', 'Delete “{name}”? Movements it has already written stay in the ledger.', { name: name }))) {
+            return;
+        }
+
+        Craft.sendActionRequest('POST', 'pointz/rules/delete', { data: { id: button.dataset.id } })
+            .then(function() {
+                Craft.cp.displayNotice(Craft.t('pointz', 'Earning rule deleted.'));
+                row.parentNode.removeChild(row);
+            })
+            .catch(function(error) {
+                Craft.cp.displayError(error.response && error.response.data ? error.response.data.message : error);
+            });
+    });
+});
+{% endjs %}

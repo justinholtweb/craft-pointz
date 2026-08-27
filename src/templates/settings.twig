@@ -1,0 +1,297 @@
+{# Field names carry no `settings[…]` prefix: `craft\base\Plugin::settingsResponse()` runs this
+   template's output through `View::namespaceInputs(…, 'settings')`, so a name written as
+   `settings[foo]` here posts as `settings[settings][foo]` and saves nothing at all — the screen
+   looks perfect, Craft reports "Plugin settings saved", and every edit is silently discarded. #}
+{% import "_includes/forms" as forms %}
+
+{% set isPro = plugin.isPro() %}
+{% set statusOptions = [{ value: '', label: "Choose a status"|t('pointz') }] %}
+{% if craft.app.plugins.isPluginEnabled('commerce') %}
+    {% for status in craft.commerce.orderStatuses.getAllOrderStatuses() %}
+        {% set statusOptions = statusOptions|merge([{ value: status.handle, label: status.name }]) %}
+    {% endfor %}
+{% endif %}
+
+<h2>{{ "Earning"|t('pointz') }}</h2>
+
+{{ forms.lightswitchField({
+    first: true,
+    label: "Award points on completed orders"|t('pointz'),
+    instructions: "Off leaves live checkouts alone and keeps Pointz available for manual grants and console work."|t('pointz'),
+    id: 'earningEnabled',
+    name: 'earningEnabled',
+    on: settings.earningEnabled
+}) }}
+
+{{ forms.selectField({
+    label: "Award when"|t('pointz'),
+    instructions: "Awarding on completion is immediate and simple. Awarding on payment or on a status means the points arrive only once the money has, which matters if you take offline payments."|t('pointz'),
+    id: 'awardOn',
+    name: 'awardOn',
+    options: settings.awardMoments()|map((label, value) => { value: value, label: label })|values,
+    value: settings.awardOn,
+    toggle: true,
+    targetPrefix: 'award-'
+}) }}
+
+<div id="award-status" class="{{ settings.awardOn == 'status' ? '' : 'hidden' }}">
+    {{ forms.selectField({
+        label: "Releasing status"|t('pointz'),
+        instructions: "The order status that hands the points over."|t('pointz'),
+        id: 'awardOnStatus',
+        name: 'awardOnStatus',
+        options: statusOptions,
+        value: settings.awardOnStatus,
+        errors: settings.getErrors('awardOnStatus')
+    }) }}
+</div>
+
+{{ forms.textField({
+    type: 'number',
+    label: "Hold new points for"|t('pointz'),
+    instructions: "Days a new balance stays pending before it can be spent — a refund window, in effect. Zero makes points spendable immediately."|t('pointz'),
+    id: 'holdDays',
+    name: 'holdDays',
+    value: settings.holdDays,
+    size: 5,
+    unit: "days"|t('pointz'),
+    errors: settings.getErrors('holdDays')
+}) }}
+
+{{ forms.lightswitchField({
+    label: "Guest checkouts earn"|t('pointz'),
+    instructions: "Commerce gives every order a customer account, so a guest's points wait for them to activate it. Off means guests earn nothing at all."|t('pointz'),
+    id: 'earnAsGuest',
+    name: 'earnAsGuest',
+    on: settings.earnAsGuest
+}) }}
+
+{{ forms.lightswitchField({
+    label: "Earn on value paid with points or credit"|t('pointz'),
+    instructions: "Off by default. Paying with points and then earning points on the same money is a loop the store funds twice."|t('pointz'),
+    id: 'earnOnRedeemedValue',
+    name: 'earnOnRedeemedValue',
+    on: settings.earnOnRedeemedValue
+}) }}
+
+<hr>
+
+<h2>{{ "Redeeming"|t('pointz') }}</h2>
+
+{{ forms.lightswitchField({
+    label: "Let customers spend points at checkout"|t('pointz'),
+    id: 'redemptionEnabled',
+    name: 'redemptionEnabled',
+    on: settings.redemptionEnabled
+}) }}
+
+{{ forms.textField({
+    type: 'number',
+    step: 'any',
+    label: "Points per unit of currency"|t('pointz'),
+    instructions: "How many points buy one unit of the store's currency. 100 means 100 points are worth 1.00."|t('pointz'),
+    id: 'pointsPerUnit',
+    name: 'pointsPerUnit',
+    value: settings.pointsPerUnit,
+    size: 8,
+    errors: settings.getErrors('pointsPerUnit')
+}) }}
+
+{{ forms.textField({
+    type: 'number',
+    step: 'any',
+    label: "Minimum redemption"|t('pointz'),
+    instructions: "The fewest points a customer may spend in one order. Zero for no minimum."|t('pointz'),
+    id: 'minPointsToRedeem',
+    name: 'minPointsToRedeem',
+    value: settings.minPointsToRedeem,
+    size: 8,
+    errors: settings.getErrors('minPointsToRedeem')
+}) }}
+
+{{ forms.textField({
+    type: 'number',
+    step: 'any',
+    label: "Redeem in multiples of"|t('pointz'),
+    instructions: "1 lets a customer spend any number. 100 rounds every request down to the nearest hundred."|t('pointz'),
+    id: 'redeemBlockSize',
+    name: 'redeemBlockSize',
+    value: settings.redeemBlockSize,
+    size: 8,
+    errors: settings.getErrors('redeemBlockSize')
+}) }}
+
+{{ forms.textField({
+    type: 'number',
+    step: 'any',
+    label: "Maximum share of an order"|t('pointz'),
+    instructions: "The most of the redeemable base points may cover, as a percentage. Leave empty to let points pay for all of it."|t('pointz'),
+    id: 'maxRedemptionPercent',
+    name: 'maxRedemptionPercent',
+    value: settings.maxRedemptionPercent,
+    size: 6,
+    unit: '%',
+    errors: settings.getErrors('maxRedemptionPercent')
+}) }}
+
+{{ forms.selectField({
+    label: "Redeemable against"|t('pointz'),
+    instructions: "Which figure the cap is measured against — and therefore whether points can pay for shipping and tax."|t('pointz'),
+    id: 'redeemableBase',
+    name: 'redeemableBase',
+    options: settings.redeemableBases()|map((label, value) => { value: value, label: label })|values,
+    value: settings.redeemableBase
+}) }}
+
+{{ forms.selectField({
+    label: "If the balance falls short"|t('pointz'),
+    instructions: "A cart quotes against the balance on every recalculation, so this only happens when the balance moves between the last quote and completion. Clamping keeps the checkout working and notes the shortfall on the order."|t('pointz'),
+    id: 'onShortfall',
+    name: 'onShortfall',
+    options: settings.shortfallModes()|map((label, value) => { value: value, label: label })|values,
+    value: settings.onShortfall
+}) }}
+
+{% if isPro %}
+    {{ forms.lightswitchField({
+        label: "Let customers spend store credit"|t('pointz'),
+        instructions: "Store credit is the customer's own money, so the percentage cap above does not apply to it — only the order's remaining value does."|t('pointz'),
+        id: 'creditRedemptionEnabled',
+        name: 'creditRedemptionEnabled',
+        on: settings.creditRedemptionEnabled
+    }) }}
+{% endif %}
+
+<hr>
+
+<h2>{{ "Expiry"|t('pointz') }}</h2>
+
+{{ forms.lightswitchField({
+    label: "Expire earned value"|t('pointz'),
+    instructions: "Expiry runs from `pointz/sweep/run`, which you schedule. Nothing expires on its own just because a date has passed."|t('pointz'),
+    id: 'expiryEnabled',
+    name: 'expiryEnabled',
+    on: settings.expiryEnabled
+}) }}
+
+{{ forms.textField({
+    type: 'number',
+    label: "Expires after"|t('pointz'),
+    instructions: "Days a lot lives, unless its own rule says otherwise."|t('pointz'),
+    id: 'expireAfterDays',
+    name: 'expireAfterDays',
+    value: settings.expireAfterDays,
+    size: 6,
+    unit: "days"|t('pointz'),
+    errors: settings.getErrors('expireAfterDays')
+}) }}
+
+{% if isPro %}
+    {{ forms.textField({
+        type: 'number',
+        label: "Expire an idle balance after"|t('pointz'),
+        instructions: "Days with no earning and no spending after which the whole balance goes. Leave empty to keep balances alive indefinitely."|t('pointz'),
+        id: 'inactivityExpiryDays',
+        name: 'inactivityExpiryDays',
+        value: settings.inactivityExpiryDays,
+        size: 6,
+        unit: "days"|t('pointz'),
+        errors: settings.getErrors('inactivityExpiryDays')
+    }) }}
+
+    {{ forms.textField({
+        type: 'number',
+        label: "Warn this long before expiry"|t('pointz'),
+        instructions: "How far ahead `craft.pointz.expiring()` and `pointz/sweep/expiring` look."|t('pointz'),
+        id: 'expiryWarningDays',
+        name: 'expiryWarningDays',
+        value: settings.expiryWarningDays,
+        size: 6,
+        unit: "days"|t('pointz'),
+        errors: settings.getErrors('expiryWarningDays')
+    }) }}
+{% endif %}
+
+<hr>
+
+<h2>{{ "Refunds"|t('pointz') }}</h2>
+
+{{ forms.selectField({
+    label: "When an order is refunded"|t('pointz'),
+    instructions: "Reversal is cumulative: two 20% refunds take 40% in total, not 20% twice or 40% the second time."|t('pointz'),
+    id: 'onRefund',
+    name: 'onRefund',
+    options: settings.reversalModes()|map((label, value) => { value: value, label: label })|values,
+    value: settings.onRefund
+}) }}
+
+{{ forms.lightswitchField({
+    label: "Hand back points the order spent"|t('pointz'),
+    instructions: "On by default. A customer who paid partly in points and got their money back is owed the points."|t('pointz'),
+    id: 'returnRedeemedOnRefund',
+    name: 'returnRedeemedOnRefund',
+    on: settings.returnRedeemedOnRefund
+}) }}
+
+<hr>
+
+<h2>{{ "Wording"|t('pointz') }}</h2>
+
+{{ forms.textField({
+    label: "Name for one point"|t('pointz'),
+    id: 'pointsLabel',
+    name: 'pointsLabel',
+    value: settings.pointsLabel,
+    errors: settings.getErrors('pointsLabel')
+}) }}
+
+{{ forms.textField({
+    label: "Name for several points"|t('pointz'),
+    instructions: "Used everywhere a quantity is printed — the cart adjustment, the control panel, and `craft.pointz.formatted()`."|t('pointz'),
+    id: 'pointsLabelPlural',
+    name: 'pointsLabelPlural',
+    value: settings.pointsLabelPlural,
+    errors: settings.getErrors('pointsLabelPlural')
+}) }}
+
+{{ forms.textField({
+    label: "Name for store credit"|t('pointz'),
+    id: 'creditLabel',
+    name: 'creditLabel',
+    value: settings.creditLabel,
+    errors: settings.getErrors('creditLabel')
+}) }}
+
+<hr>
+
+<h2>{{ "Operations"|t('pointz') }}</h2>
+
+{{ forms.textField({
+    type: 'number',
+    label: "Lock timeout"|t('pointz'),
+    instructions: "Seconds to wait for another request to finish with a customer's balance before giving up."|t('pointz'),
+    id: 'lockTimeout',
+    name: 'lockTimeout',
+    value: settings.lockTimeout,
+    size: 5,
+    errors: settings.getErrors('lockTimeout')
+}) }}
+
+{{ forms.textField({
+    type: 'number',
+    label: "Sweep batch size"|t('pointz'),
+    instructions: "How many lots or accounts a single expiry or promotion run works through."|t('pointz'),
+    id: 'sweepBatchSize',
+    name: 'sweepBatchSize',
+    value: settings.sweepBatchSize,
+    size: 6,
+    errors: settings.getErrors('sweepBatchSize')
+}) }}
+
+{{ forms.lightswitchField({
+    label: "Log every movement"|t('pointz'),
+    instructions: "Writes each movement to the logs as well as the ledger. Useful while setting up, noisy afterwards."|t('pointz'),
+    id: 'logTransactions',
+    name: 'logTransactions',
+    on: settings.logTransactions
+}) }}
