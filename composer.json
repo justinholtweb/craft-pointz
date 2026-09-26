@@ -13,6 +13,7 @@
         "rewards",
         "store-credit"
     ],
+    "homepage": "https://justinholt.com/plugins/craft-pointz",
     "license": "proprietary",
     "authors": [
         {
@@ -21,7 +22,10 @@
         }
     ],
     "support": {
-        "email": "justin@justinholt.com"
+        "email": "justin@justinholt.com",
+        "docs": "https://justinholt.com/plugins/craft-pointz/docs",
+        "source": "https://github.com/justinholtweb/craft-pointz",
+        "issues": "https://github.com/justinholtweb/craft-pointz/issues"
     },
     "minimum-stability": "stable",
     "prefer-stable": true,
@@ -47,7 +51,7 @@
         "handle": "pointz",
         "developer": "Justin Holt",
         "developerUrl": "https://justinholt.com",
-        "documentationUrl": "https://github.com/justinholtweb/craft-pointz/blob/main/README.md",
+        "documentationUrl": "https://justinholt.com/plugins/craft-pointz/docs",
         "changelogUrl": "https://raw.githubusercontent.com/justinholtweb/craft-pointz/main/CHANGELOG.md",
         "class": "justinholtweb\\pointz\\Plugin"
     }

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- Slide watermark: the glyph from src/icon-mask.svg in white, with the tile stripped. A rounded
+       square at watermark scale reads as a grey box across the slide, not as the icon. -->
+  <g fill="#FFFFFF">
+    <path d="M37.53 26.59A26 26 0 1 1 73.41 62.47A30.5 30.5 0 0 0 37.53 26.59Z"/>
+    <path fill-rule="evenodd" d="M43.5 30.5A26 26 0 1 1 43.5 82.5A26 26 0 1 1 43.5 30.5ZM43.5 40.2L47.97 51.55L60.14 52.29L50.73 60.05L53.79 71.86L43.5 65.3L33.21 71.86L36.27 60.05L26.86 52.29L39.03 51.55Z"/>
+  </g>
+</svg>
