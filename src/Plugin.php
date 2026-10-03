@@ -69,7 +69,7 @@ class Plugin extends BasePlugin
     public const EDITION_LITE = 'lite';
     public const EDITION_PRO = 'pro';
 
-    public string $schemaVersion = '5.2.0';
+    public string $schemaVersion = '5.1.1';
     public bool $hasCpSettings = true;
     public bool $hasCpSection = true;
 

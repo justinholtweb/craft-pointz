@@ -1,6 +1,6 @@
 # Release Notes for Pointz
 
-## Unreleased
+## 5.1.1 - 2026-10-03
 
 ### Added
 
