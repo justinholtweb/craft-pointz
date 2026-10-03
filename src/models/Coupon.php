@@ -96,7 +96,8 @@ class Coupon extends Model
      */
     public function getIsUsable(?DateTime $when = null): bool
     {
-        if ($this->status !== self::STATUS_ACTIVE) {
+        // No Commerce coupon behind it means the discount was deleted in Commerce.
+        if ($this->status !== self::STATUS_ACTIVE || $this->couponId === null) {
             return false;
         }
 

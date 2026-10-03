@@ -580,7 +580,9 @@ class Rewards extends Component
         $accounts = Plugin::getInstance()->getAccounts();
         $accounts->clearMemo($userId, $storeId);
 
-        return $accounts->getAccount($userId, $storeId)?->pointsBalance ?? 0.0;
+        $account = $accounts->getAccount($userId, $storeId);
+
+        return $account === null ? 0.0 : $account->pointsBalance;
     }
 
     private function _noteFor(string $event, Rule $rule): string

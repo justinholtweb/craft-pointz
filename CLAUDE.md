@@ -45,6 +45,12 @@ Anything that cannot survive that rule does not ship.
 | Status changes | `OrderHistories::EVENT_ORDER_STATUS_CHANGE` | Award if `awardOn` is `status` and the handle matches. |
 | Refund saved | `Transactions::EVENT_AFTER_SAVE_TRANSACTION` | Reverse pro rata; optionally return what the order spent. |
 | New user | `User::EVENT_AFTER_PROPAGATE` with `isNew` | The signup bonus. |
+| Points arrive | `Ledger::EVENT_AFTER_COMMIT` (and `Lifecycle::_release()`) | Evaluate threshold rules. *After the commit*, because a threshold spends and the ledger can't be re-entered from inside its own lock. |
+| Discount matches | `Discounts::EVENT_DISCOUNT_MATCHES_ORDER` | A Pointz coupon code only matches its owner's order, and only while live. |
+| Order completes | `Order::EVENT_AFTER_COMPLETE_ORDER` | Also marks the order's Pointz coupon used. |
+| Review saved | `Element::EVENT_AFTER_SAVE` on Stars' `Review`, by class name | Review rules, once approved. |
+| Form submitted | Formie `Submissions` `afterSubmission`, by class name | Custom event `formie:<formHandle>`. |
+| List joined | Dispatch `SubscriptionRecord` after insert, by class name | Custom event `dispatch:<listHandle>`, site requests only, so an import doesn't pay a whole list. |
 
 The adjuster is registered **last** on purpose: it has to see shipping, discount and tax before it
 can cap a redemption against a real total. `Order::recalculate()` clears every adjustment before
@@ -53,7 +59,7 @@ own previous output — which is what stops the discount compounding.
 
 ### Data model
 
-Six tables, all hard deletes:
+Seven tables, all hard deletes:
 
 - `pointz_accounts` — (storeId, userId) unique. A cache; rebuildable.
 - `pointz_transactions` — the append-only ledger. Signed `amount`, `balanceAfter` for support
@@ -63,6 +69,9 @@ Six tables, all hard deletes:
 - `pointz_lot_uses` — what a spend took, from where, and how much has been given back.
 - `pointz_rules` — earning rules, ordered by `sortOrder`, which *is* precedence.
 - `pointz_cart_redemptions` — the customer's intent for a cart, keyed on `orderId`.
+- `pointz_coupons` — every code Pointz issued: owner, rule, Commerce `discountId`/`couponId`,
+  `type` and `amount` as issued, `status` (active/used/expired/revoked), `dateExpires`,
+  `dateRemind`. The code is copied here because Commerce's row is deleted when a code expires.
 
 Rules live in the **database, not project config**, the same call Commerce makes for its own
 discounts and shipping rules: they are commercial configuration a merchandiser changes on a Friday
@@ -74,6 +83,30 @@ afternoon, not schema that has to move between environments in lockstep.
 take a `pointz:account:<storeId>:<userId>` mutex and run inside a database transaction, then
 refresh the account cache and stamp `balanceAfter`. Nothing else may write to
 `pointz_accounts`, and if a number there is ever wrong it is because something skipped the ledger.
+
+### Rewards that are not an order
+
+`services\Rewards` runs signup, review, birthday, threshold and custom-event rules (`Rule::proEvents()`
+are Pro, gated in `Rule::validateEdition()` and again in `Rules::getActiveRules()`). Everything pays
+through `Rewards::grant()`, which dedupes on (rule, user, **reference**): `stars:review:<id>`,
+`birthday:<year>`, the caller's own reference, or none, which means once ever. Points and credit
+go through the ledger with `reference` on the transaction; a coupon goes through
+`Coupons::issue()`.
+
+A threshold rule with *spend* on debits the threshold (kind `reward`, "Exchanged") and pays
+against that debit; if the reward throws, the debit is `restore()`d. It runs under its own
+`pointz:rewards:<store>:<user>` mutex so two arrivals can't both spend the same points. Re-entry
+finds the lock taken and returns.
+
+### Coupons: one discount per rule
+
+Commerce coupons have no owner or expiry, so the naive build is one discount per customer. Pointz
+keeps **one discount per rule** (`couponDiscountId`, created on rule save) and adds a `maxUses = 1`
+code per issuance. `Coupons::enforceOwnership()` makes `discountMatchesOrder` false unless the
+order's customer owns the code and it's live. The discount is **replaced, never edited**, when the
+rule's value changes, so issued codes keep their value. `cleanUpDiscounts()` deletes a replaced or
+orphaned discount once no live code is left on it. `couponDiscountId` is written only by
+`ensureDiscount()`, never by `saveRule()`.
 
 ### Install seeds a disabled rule
 
@@ -129,6 +162,26 @@ exists and is documented as a trade rather than a safety feature: `markAsComplet
   you asked it to touch when a concurrent sweep got there first. The promotion sweep reads the
   transaction ids *before* moving the lots for that reason.
 
+- **Commerce only discounts promotable purchasables**, and `Purchasable::$promotable` defaults to
+  false. A coupon that "matches but discounts nothing" is almost always this. The check fixtures
+  pass `makeProduct(..., promotable: true)` for coupon scenarios.
+- **Re-saving a Commerce discount rewrites its whole coupon list** (`saveDiscountCoupons()` deletes
+  any code not on the model). Pointz never re-saves its discounts. Codes go in through
+  `Coupons::saveCoupon()` one at a time.
+- **A stale rule model will put back a deleted `couponDiscountId`.** `onlyRules()` re-saves models
+  loaded earlier in the run. Writing that column from `saveRule()` hit the FK once a cleanup had
+  deleted the discount, which is why only `ensureDiscount()` writes it, reading the current value
+  from the database.
+- **Yii mutexes aren't re-entrant**: acquiring a lock you already hold returns false. That's why
+  thresholds hang off `EVENT_AFTER_COMMIT`. `EVENT_AFTER_TRANSACTION` fires inside the account lock.
+- **Stars stores a reviewer email and an entry, not a user and a product.** The customer is found
+  by email, and "bought it" means a purchased product (or its variant) that is the entry or is
+  related to it in either direction.
+- **Dispatch has no "subscribed" event**, and its CSV import goes through the same `subscribe()`.
+  The hook listens to `SubscriptionRecord` inserts and ignores console, queue and CP requests.
+  The check stands in a site request by swapping in a `craft\web\Request` with
+  `setIsConsoleRequest(false)`.
+
 See also `[[craft-plugin-gotchas]]` and `[[craft-commerce-shipping-gotchas]]` in the shared memory
 for family-wide traps.
 
@@ -138,7 +191,7 @@ No local PHP on this Mac. Everything runs inside the plugin-testing container:
 
 ```sh
 docker exec -w /var/www/html ddev-plugin-testing-web \
-  php /var/www/craft-pointz/tests/integration/checks.php          # 70 checks
+  php /var/www/craft-pointz/tests/integration/checks.php          # 93 checks
 docker exec -w /var/www/html ddev-plugin-testing-web \
   php /var/www/craft-pointz/tests/integration/security.php        # 11, a guest vs the signed-in customer over HTTP
 docker exec -w /sites/craft-pointz ddev-phpstan-runner-web \

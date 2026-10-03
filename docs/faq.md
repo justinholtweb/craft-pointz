@@ -69,14 +69,25 @@ page; see [Twig and events](twig).
 **Pointz → Balances → the customer**, or `pointz/grant/to-user`. Both go through the ledger, so
 what you grant expires and reverses exactly like something earned.
 
-### Can I award points for a review, or a birthday, or a referral?
+### Can I award points for a review, a birthday, a newsletter signup or a referral?
 
-Not from the rule builder — Craft has no reviews, and referrals are a different product. Write the
-grant yourself in three lines:
+Reviews, birthdays and signups, yes, in Pro: they're triggers on an earning rule, alongside
+reaching a points balance and a custom event you can fire from a Formie form, a Dispatch list or
+your own code. See [Rewards that are not an order](usage.md#rewards-that-are-not-an-order-pro).
+
+Referrals aren't built in yet. A referral programme needs its own codes, its own record of who
+referred whom, and protection against people referring themselves, and it is planned as a feature
+of its own. Until then, a custom event with a reference does the paying part:
 
 ```php
-Plugin::getInstance()->getGrants()->grant($userId, $storeId, 'points', 100, 'Left a review');
+Plugin::getInstance()->getRewards()->awardEvent($referrer, 'referral', reference: 'referred:' . $newCustomer->id);
 ```
+
+### Can it give out coupons instead of points?
+
+Yes, in Pro. Any rule that isn't an order can award a single-use coupon, tied to one customer and
+optionally expiring, with a reminder email before it does. It uses one Commerce discount per rule
+rather than one per customer. See [Coupons as a reward](usage.md#coupons-as-a-reward-pro).
 
 ### What is the difference between points and store credit?
 

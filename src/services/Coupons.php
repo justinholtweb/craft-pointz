@@ -75,6 +75,14 @@ class Coupons extends Component
             return null;
         }
 
+        // The database, not the model: a model loaded earlier in the request may predate a
+        // replacement.
+        $rule->couponDiscountId = ((int)(new Query())
+            ->select(['couponDiscountId'])
+            ->from(Table::RULES)
+            ->where(['id' => $rule->id])
+            ->scalar()) ?: null;
+
         $discounts = Commerce::getInstance()->getDiscounts();
         $current = $rule->couponDiscountId ? $discounts->getDiscountById($rule->couponDiscountId) : null;
 
@@ -149,10 +157,9 @@ class Coupons extends Component
         $commerceCoupon->maxUses = 1;
         $commerceCoupon->uses = 0;
 
-        $discounts = Commerce::getInstance()->getDiscounts();
-        $saved = method_exists($discounts, 'appendCouponCode')
-            ? $discounts->appendCouponCode($discountId, $commerceCoupon)
-            : Commerce::getInstance()->getCoupons()->saveCoupon($commerceCoupon);
+        // Saved on its own rather than through the discount: re-saving a discount rewrites its
+        // whole coupon list, and this one may carry thousands of codes.
+        $saved = Commerce::getInstance()->getCoupons()->saveCoupon($commerceCoupon);
 
         if (!$saved || !$commerceCoupon->id) {
             throw new PointzException('Could not add the coupon code: ' . json_encode($commerceCoupon->getErrors()));
@@ -326,6 +333,13 @@ class Coupons extends Component
             ->limit($limit)
             ->all();
 
+        // A code whose Commerce coupon is gone — somebody deleted the discount in Commerce — can
+        // never be used again, so it stops being offered as if it could.
+        Db::update(Table::COUPONS, ['status' => Coupon::STATUS_REVOKED], [
+            'status' => Coupon::STATUS_ACTIVE,
+            'couponId' => null,
+        ]);
+
         $count = 0;
 
         foreach ($rows as $row) {
@@ -493,14 +507,14 @@ class Coupons extends Component
     }
 
     /**
-     * @param array{userId?: int, storeId?: int, ruleId?: int, status?: string|string[], reference?: string} $criteria
+     * @param array{userId?: int, storeId?: int, ruleId?: int, discountId?: int, status?: string|string[], reference?: string} $criteria
      * @return Coupon[]
      */
     public function getCoupons(array $criteria = [], ?int $limit = 100): array
     {
         $query = $this->_query()->orderBy(['id' => SORT_DESC])->limit($limit);
 
-        foreach (['userId', 'storeId', 'ruleId', 'status', 'reference'] as $key) {
+        foreach (['userId', 'storeId', 'ruleId', 'discountId', 'status', 'reference'] as $key) {
             if (isset($criteria[$key])) {
                 $query->andWhere([$key => $criteria[$key]]);
             }

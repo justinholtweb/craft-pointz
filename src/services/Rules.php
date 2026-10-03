@@ -156,7 +156,8 @@ class Rules extends Component
         $record->couponValidDays = $rule->couponValidDays;
         $record->couponRemindDays = $rule->couponRemindDays;
         $record->couponNotify = $rule->couponNotify;
-        $record->couponDiscountId = $rule->couponDiscountId;
+        // `couponDiscountId` is written only by Coupons::ensureDiscount(). A model loaded before
+        // the discount was replaced or deleted would otherwise put back an ID that is gone.
 
         $record->save(false);
 

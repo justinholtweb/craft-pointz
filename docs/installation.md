@@ -44,13 +44,15 @@ switch it on.
 4. Add the redemption form to your cart or checkout template — see
    [Usage](usage).
 
-5. Schedule the sweep, if you are going to expire anything:
+5. Schedule the sweep daily if you're going to expire anything, pay birthday rewards or issue
+   coupons that expire:
 
    ```sh
    php craft pointz/sweep/run
    ```
 
-   Nothing expires because a date passed. It expires because that ran.
+   Nothing expires because a date passed. It expires because that ran. The same goes for
+   birthdays being paid and coupon reminders being sent.
 
 ## Permissions
 

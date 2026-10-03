@@ -1,5 +1,41 @@
 # Release Notes for Pointz
 
+## 5.1.0 - 2026-10-03
+
+### Added
+
+- Earning rules for things that are not an order *(Pro)*. Each pays a customer once per
+  occurrence, and conditions, windows, caps and expiry apply as on any rule:
+  - **An approved review**, through Stars. Options require written text, or require the reviewed
+    entry to be a product the customer bought (or related to one). The reviewer is matched to a
+    customer by email.
+  - **A customer's birthday**, read from a Date or plain text user field and paid by
+    `pointz/sweep/run`. A missed night is caught up for six days, and 29 February falls on the
+    28th.
+  - **Reaching a points balance.** By default the threshold is spent on the reward, so "every 500
+    points becomes €5" is one rule; with spending off it is a once-ever milestone. Tiers are
+    written with precedence and *stop after this one*.
+  - **A custom event**, fired by handle: `formie:<form>` for a Formie submission,
+    `dispatch:<list>` for a Dispatch signup from the site, or anything a module passes to
+    `Rewards::awardEvent()`. A handle may end in `*`.
+- **Coupons as a reward** *(Pro)*. Any rule but an order can issue a single-use Commerce coupon
+  code, a percentage or a fixed amount, to one customer, with an optional expiry, an optional
+  email when it is issued and an optional reminder before it expires. Pointz uses one Commerce
+  discount per rule rather than one per customer. A code only discounts its owner's order and only
+  until it expires, and the sweep deletes expired codes from Commerce and removes discounts nothing
+  issues against any more. Changing a rule's value starts a new discount, so codes already issued
+  keep their value.
+- The signup bonus can award store credit or a coupon *(Pro)*.
+- Two system messages, *When Pointz issues a coupon* and *When a Pointz coupon is about to expire*,
+  edited under Utilities → System Messages.
+- A customer's coupons on their balance page, with a **Revoke** button.
+- `craft.pointz.coupons()`, and an `event` argument on `craft.pointz.activeRules()`.
+- `pointz/sweep/birthdays` and `pointz/sweep/coupons`; `pointz/sweep/run` now does both.
+- `Rewards::EVENT_BEFORE_REWARD`, `Coupons::EVENT_AFTER_ISSUE`, `Coupons::EVENT_BEFORE_REMIND`, and
+  `Ledger::EVENT_AFTER_COMMIT`, raised after a positive movement once the account's lock is
+  released, for handlers that need to move value themselves.
+- An *Exchanged* ledger kind for points a threshold spends.
+
 ## 5.0.1 - 2026-10-03
 
 ### Security

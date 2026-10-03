@@ -2,7 +2,7 @@
 title: Twig and events
 slug: twig
 order: 40
-summary: Everything on craft.pointz, and the two events for logic the rule builder cannot express.
+summary: Everything on craft.pointz, and the events for logic the rule builder cannot express.
 ---
 
 ## craft.pointz
@@ -46,10 +46,32 @@ redeem.
 craft.pointz.willEarn()                   {# an Award for the current cart #}
 craft.pointz.earnFor(variant, 2)          {# an Award for a product page #}
 craft.pointz.activeRules()                {# the rules a shop might want to advertise #}
+craft.pointz.activeRules(null, 'birthday') {# the same, for another trigger #}
 ```
 
 An `Award` has `points`, `credit`, `lines` (one per contributing rule, with `ruleName`, `amount`,
 `basis` and any `note` explaining a cap) and `notices`.
+
+### Coupons *(Pro)*
+
+```twig
+craft.pointz.coupons()                    {# the codes the customer can still use #}
+craft.pointz.coupons(null)                {# all of them: used, expired and revoked too #}
+craft.pointz.coupons('used', user, storeId)
+```
+
+```twig
+{% for coupon in craft.pointz.coupons() %}
+    <p>
+        <code>{{ coupon.code }}</code>: {{ coupon.valueLabel }} off
+        {%- if coupon.dateExpires %}, until {{ coupon.dateExpires|date('long') }}{% endif %}
+    </p>
+{% endfor %}
+```
+
+A `Coupon` has `code`, `valueLabel` ("10%" or "€5.00"), `type`, `amount`, `status`,
+`statusLabel`, `dateExpires`, `dateUsed`, `rule`, `order` (the order it was used on) and
+`isUsable`.
 
 ### Formatting
 
@@ -128,6 +150,56 @@ Event::on(
 The ledger is append-only, so this event is read-only by design: there is nothing to change after
 the fact, and a correction is written as its opposite.
 
+### Paying out only when you say so
+
+Every rule that is not an order (a signup, a review, a birthday, a threshold, a custom event)
+raises `Rewards::EVENT_BEFORE_REWARD` before it hands anything out. Set `isValid` to false to skip
+it. Nothing is recorded, so the same trigger can still pay later.
+
+```php
+use justinholtweb\pointz\events\RewardEvent;
+use justinholtweb\pointz\services\Rewards;
+use yii\base\Event;
+
+Event::on(
+    Rewards::class,
+    Rewards::EVENT_BEFORE_REWARD,
+    function(RewardEvent $event) {
+        // $event->rule, $event->user, $event->storeId, $event->reference, $event->context
+        if ($event->rule->event === 'review' && str_ends_with($event->user->email, '@ourshop.com')) {
+            $event->isValid = false; // staff don't earn for reviews
+        }
+    }
+);
+```
+
+### Sending the coupon emails yourself
+
+`Coupons::EVENT_AFTER_ISSUE` fires after a coupon is issued. `Coupons::EVENT_BEFORE_REMIND` fires
+before its expiry reminder: set `isValid` to false and Pointz won't send its own email. The coupon
+is marked reminded either way, so the reminder goes out once.
+
+```php
+use justinholtweb\pointz\events\CouponEvent;
+use justinholtweb\pointz\services\Coupons;
+
+Event::on(
+    Coupons::class,
+    Coupons::EVENT_BEFORE_REMIND,
+    function(CouponEvent $event) {
+        MyMailer::send($event->user, 'coupon-expiring', ['code' => $event->coupon->code]);
+        $event->isValid = false;
+    }
+);
+```
+
+### Moving value in response to a movement
+
+`Ledger::EVENT_AFTER_TRANSACTION` fires *inside* the account's lock, so a handler there must not
+move value itself. `Ledger::EVENT_AFTER_COMMIT` fires after a positive movement, once the lock is
+released and the transaction committed. That's where to react with a movement of your own. It's
+how threshold rules spend what just arrived.
+
 ## Services
 
 ```php
@@ -142,6 +214,8 @@ $plugin->getGrants()->grantMany($userIds, $storeId, 'points', 250, 'Launch');
 $plugin->getEarning()->evaluateOrder($order, true);
 $plugin->getRedemption()->quote($cart, 500);
 $plugin->getLifecycle()->expireDueLots();
+$plugin->getRewards()->awardEvent($user, 'attendedWorkshop');
+$plugin->getCoupons()->getCoupons(['userId' => $userId, 'status' => 'active']);
 ```
 
 `Ledger` is the only writer. Anything that moves value goes through `credit()`, `debit()`,

@@ -155,7 +155,7 @@ function onlyRules(array $keep): void
     $rulesService->clearMemo();
 }
 
-function makeProduct(string $sku, float $price): Product
+function makeProduct(string $sku, float $price, bool $promotable = false): Product
 {
     global $createdProducts;
 
@@ -170,6 +170,8 @@ function makeProduct(string $sku, float $price): Product
     $variant->sku = $sku;
     $variant->basePrice = $price;
     $variant->isDefault = true;
+    // Commerce only lets a discount touch a promotable purchasable.
+    $variant->promotable = $promotable;
 
     $product->setVariants([$variant]);
 
@@ -1196,6 +1198,528 @@ try {
         return $accounts->getAccount($previewUser->id, $storeId) === null
             ?: 'a preview created an account';
     });
+
+    // ---------------------------------------------------------------------------------------
+    section('Rewards');
+
+    $rewards = $plugin->getRewards();
+    $couponsService = $plugin->getCoupons();
+
+    check('a custom-event rule pays once per customer, and a reference makes each instance its own', function() use ($rewards, $accounts, $storeId) {
+        $rule = makeRule('newsletter', ['event' => Rule::EVENT_CUSTOM, 'eventHandle' => 'newsletter', 'rate' => 50]);
+        onlyRules([$rule]);
+        $user = makeUser('newsletter');
+
+        $first = $rewards->awardEvent($user, 'newsletter');
+        $again = $rewards->awardEvent($user->email, 'newsletter');
+        $other = $rewards->awardEvent($user, 'somethingElse');
+        $refA = $rewards->awardEvent($user, 'newsletter', reference: 'issue:1');
+        $refA2 = $rewards->awardEvent($user, 'newsletter', reference: 'issue:1');
+        $accounts->clearMemo();
+        $balance = $accounts->getAccount($user->id, $storeId)?->pointsBalance;
+
+        if (count($first) !== 1 || $again !== [] || $other !== [] || count($refA) !== 1 || $refA2 !== []) {
+            return sprintf('paid %d, %d, %d, %d, %d', count($first), count($again), count($other), count($refA), count($refA2));
+        }
+
+        return $balance == 100.0 ?: "balance $balance";
+    });
+
+    check('a custom-event handle ending in * matches several events', function() use ($rewards) {
+        $rule = makeRule('formieAll', ['event' => Rule::EVENT_CUSTOM, 'eventHandle' => 'formie:*', 'rate' => 5]);
+        onlyRules([$rule]);
+        $user = makeUser('wildcard');
+
+        return count($rewards->awardEvent($user, 'formie:contact')) === 1
+            && count($rewards->awardEvent($user, 'dispatch:club')) === 0
+            ?: 'the wildcard did not match as expected';
+    });
+
+    check('a Formie submission fires its form’s custom event', function() use ($accounts, $storeId) {
+        if (!class_exists(\verbb\formie\services\Submissions::class)) {
+            return true;
+        }
+
+        $rule = makeRule('formieNews', ['event' => Rule::EVENT_CUSTOM, 'eventHandle' => 'formie:pointzNews', 'rate' => 30]);
+        onlyRules([$rule]);
+        $user = makeUser('formie');
+
+        $submission = new \verbb\formie\elements\Submission();
+        $submission->userId = $user->id;
+        $form = new \verbb\formie\elements\Form();
+        $form->handle = 'pointzNews';
+
+        yii\base\Event::trigger(\verbb\formie\services\Submissions::class, 'afterSubmission', new \verbb\formie\events\SubmissionEvent([
+            'submission' => $submission,
+            'form' => $form,
+            'success' => true,
+        ]));
+
+        $spam = new \verbb\formie\elements\Submission();
+        $spam->userId = $user->id;
+        $spam->isSpam = true;
+        yii\base\Event::trigger(\verbb\formie\services\Submissions::class, 'afterSubmission', new \verbb\formie\events\SubmissionEvent([
+            'submission' => $spam,
+            'form' => $form,
+            'success' => true,
+        ]));
+
+        $accounts->clearMemo();
+        $balance = $accounts->getAccount($user->id, $storeId)?->pointsBalance;
+
+        return $balance == 30.0 ?: "balance $balance";
+    });
+
+    check('a Dispatch signup pays from a site request, and an import does not', function() use ($accounts, $storeId, $tag) {
+        if (!class_exists(\justinholtweb\dispatch\Plugin::class) || !Craft::$app->getPlugins()->isPluginEnabled('dispatch')) {
+            return true;
+        }
+
+        $elements = Craft::$app->getElements();
+        $user = makeUser('dispatch');
+        $made = [];
+        $consoleRequest = Craft::$app->getRequest();
+
+        try {
+            $list = new \justinholtweb\dispatch\elements\MailingList();
+            $list->name = $list->title = 'Pointz check';
+            $list->handle = strtolower($tag) . 'List';
+            $elements->saveElement($list) || throw new RuntimeException('list: ' . json_encode($list->getErrors()));
+            $made[] = $list;
+
+            $subscriber = new \justinholtweb\dispatch\elements\Subscriber();
+            $subscriber->email = $user->email;
+            $elements->saveElement($subscriber) || throw new RuntimeException('subscriber: ' . json_encode($subscriber->getErrors()));
+            $made[] = $subscriber;
+
+            $rule = makeRule('dispatchList', ['event' => Rule::EVENT_CUSTOM, 'eventHandle' => 'dispatch:' . $list->handle, 'rate' => 25]);
+            onlyRules([$rule]);
+            $subscribers = \justinholtweb\dispatch\Plugin::getInstance()->subscribers;
+
+            // From the console, as an import would: nothing.
+            $subscribers->subscribe($subscriber->id, $list->id);
+            $accounts->clearMemo();
+            $afterImport = $accounts->getAccount($user->id, $storeId)?->pointsBalance ?? 0.0;
+
+            // As a visitor's request to Dispatch's subscribe action.
+            \justinholtweb\dispatch\records\SubscriptionRecord::deleteAll(['subscriberId' => $subscriber->id]);
+            $_SERVER['REQUEST_URI'] = '/actions/dispatch/api/subscribe';
+            $_SERVER['SCRIPT_NAME'] = '/index.php';
+            $_SERVER['HTTP_HOST'] = 'localhost';
+            $web = Craft::createObject(['class' => craft\web\Request::class, 'cookieValidationKey' => 'pointz-checks']);
+            $web->setIsConsoleRequest(false);
+            Craft::$app->set('request', $web);
+            $subscribers->subscribe($subscriber->id, $list->id);
+            Craft::$app->set('request', $consoleRequest);
+
+            $accounts->clearMemo();
+            $afterVisit = $accounts->getAccount($user->id, $storeId)?->pointsBalance ?? 0.0;
+
+            return $afterImport == 0.0 && $afterVisit == 25.0 ?: "import $afterImport, visit $afterVisit";
+        } finally {
+            Craft::$app->set('request', $consoleRequest);
+
+            foreach (array_reverse($made) as $element) {
+                $elements->deleteElement($element, true);
+            }
+        }
+    });
+
+    check('Lite refuses to save a Pro trigger or a coupon reward', function() use ($plugin, $storeId, $tag) {
+        $plugin->edition = Plugin::EDITION_LITE;
+
+        try {
+            $custom = new Rule(['storeId' => $storeId, 'name' => 'x', 'handle' => $tag . 'liteCustom', 'event' => Rule::EVENT_CUSTOM, 'eventHandle' => 'x']);
+            $coupon = new Rule(['storeId' => $storeId, 'name' => 'y', 'handle' => $tag . 'liteCoupon', 'event' => Rule::EVENT_SIGNUP, 'currency' => Rule::CURRENCY_COUPON, 'couponAmount' => 10]);
+
+            return !$custom->validate() && $custom->hasErrors('event') && !$coupon->validate() && $coupon->hasErrors('event')
+                ?: 'Lite accepted a Pro rule';
+        } finally {
+            $plugin->edition = Plugin::EDITION_PRO;
+        }
+    });
+
+    check('an order rule cannot award a coupon, and a threshold cannot award points', function() use ($storeId, $tag) {
+        $order = new Rule(['storeId' => $storeId, 'name' => 'o', 'handle' => $tag . 'orderCoupon', 'currency' => Rule::CURRENCY_COUPON, 'couponAmount' => 10]);
+        $threshold = new Rule(['storeId' => $storeId, 'name' => 't', 'handle' => $tag . 'thresholdPoints', 'event' => Rule::EVENT_THRESHOLD, 'thresholdPoints' => 10, 'currency' => Rule::CURRENCY_POINTS]);
+
+        return !$order->validate() && $order->hasErrors('currency') && !$threshold->validate() && $threshold->hasErrors('currency')
+            ?: 'an impossible combination validated';
+    });
+
+    // ---------------------------------------------------------------------------------------
+    section('Coupons');
+
+    check('a coupon rule creates its Commerce discount when it is saved', function() use ($commerce) {
+        $rule = makeRule('welcomeCoupon', [
+            'event' => Rule::EVENT_SIGNUP,
+            'currency' => Rule::CURRENCY_COUPON,
+            'couponType' => Rule::COUPON_PERCENT,
+            'couponAmount' => 10,
+            'couponValidDays' => 90,
+            'enabled' => false,
+        ]);
+        $discount = $rule->couponDiscountId ? $commerce->getDiscounts()->getDiscountById($rule->couponDiscountId) : null;
+
+        if ($discount === null) {
+            return 'no discount';
+        }
+
+        return $discount->requireCouponCode && abs($discount->percentDiscount + 0.1) < 0.0001
+            ?: 'discount is ' . json_encode(['code' => $discount->requireCouponCode, 'pct' => $discount->percentDiscount]);
+    });
+
+    check('a signup rule can hand out a coupon, once', function() use ($earning, $couponsService, $rulesService, $tag, $storeId) {
+        $rule = $rulesService->getRuleByHandle($tag . 'WelcomeCoupon', $storeId);
+        onlyRules([$rule]);
+        $user = makeUser('welcome');
+        // Saving a new user already fired the signup bonus.
+        $earning->awardSignup($user);
+        $coupons = $couponsService->getCoupons(['userId' => $user->id]);
+
+        if (count($coupons) !== 1) {
+            return count($coupons) . ' coupons';
+        }
+
+        $coupon = $coupons[0];
+        $days = (int)round(($coupon->dateExpires->getTimestamp() - time()) / 86400);
+
+        return str_starts_with($coupon->code, 'PZ-') && $coupon->amount == 10.0 && $days === 90
+            ?: json_encode(['code' => $coupon->code, 'amount' => $coupon->amount, 'days' => $days]);
+    });
+
+    $couponOwner = makeUser('couponOwner');
+    $couponStranger = makeUser('couponStranger');
+    $promoVariant = makeProduct($tag . '-PROMO', 25.00, true)->getVariants()[0];
+
+    check('a coupon discounts its owner’s cart', function() use ($couponsService, $rulesService, $couponOwner, $promoVariant, $tag, $storeId) {
+        $rule = $rulesService->getRuleByHandle($tag . 'WelcomeCoupon', $storeId);
+        $coupon = $couponsService->issue($rule, $couponOwner, $storeId);
+
+        $cart = makeCart($couponOwner, $promoVariant, 2);
+        $cart->couponCode = $coupon->code;
+        Craft::$app->getElements()->saveElement($cart, false);
+
+        return abs($cart->getTotalDiscount() + 5.0) < 0.001 ?: 'discount ' . $cart->getTotalDiscount();
+    });
+
+    check('somebody else’s coupon does nothing on a stranger’s cart', function() use ($couponsService, $couponOwner, $couponStranger, $promoVariant, $storeId) {
+        $coupon = $couponsService->getCoupons(['userId' => $couponOwner->id, 'status' => 'active'])[0];
+
+        $cart = makeCart($couponStranger, $promoVariant, 2);
+        $cart->couponCode = $coupon->code;
+        Craft::$app->getElements()->saveElement($cart, false);
+
+        return abs($cart->getTotalDiscount()) < 0.001 ?: 'discount ' . $cart->getTotalDiscount();
+    });
+
+    check('completing the order marks the coupon used, and Commerce counts the use', function() use ($couponsService, $couponOwner, $promoVariant) {
+        $coupon = $couponsService->getCoupons(['userId' => $couponOwner->id, 'status' => 'active'])[0];
+
+        $cart = makeCart($couponOwner, $promoVariant, 1);
+        $cart->couponCode = $coupon->code;
+        Craft::$app->getElements()->saveElement($cart, false);
+        $order = completeOrder($cart);
+
+        $fresh = $couponsService->getCouponById($coupon->id);
+        $uses = (new Query())->select(['uses'])->from('{{%commerce_coupons}}')->where(['id' => $coupon->couponId])->scalar();
+
+        return $fresh->status === 'used' && $fresh->orderId === $order->id && (int)$uses === 1
+            ?: json_encode(['status' => $fresh->status, 'orderId' => $fresh->orderId, 'uses' => $uses]);
+    });
+
+    check('an expired coupon stops discounting before the sweep, and the sweep deletes its code', function() use ($couponsService, $rulesService, $couponOwner, $promoVariant, $tag, $storeId) {
+        $rule = $rulesService->getRuleByHandle($tag . 'WelcomeCoupon', $storeId);
+        $coupon = $couponsService->issue($rule, $couponOwner, $storeId);
+        craft\helpers\Db::update(Table::COUPONS, ['dateExpires' => craft\helpers\Db::prepareDateForDb(new DateTime('-1 hour'))], ['id' => $coupon->id]);
+
+        $cart = makeCart($couponOwner, $promoVariant, 2);
+        $cart->couponCode = $coupon->code;
+        Craft::$app->getElements()->saveElement($cart, false);
+        $discounted = abs($cart->getTotalDiscount()) > 0.001;
+
+        $expired = $couponsService->expireDue();
+        $fresh = $couponsService->getCouponById($coupon->id);
+        $codeLeft = (new Query())->from('{{%commerce_coupons}}')->where(['code' => $coupon->code])->exists();
+
+        if ($discounted) {
+            return 'an expired code still discounted';
+        }
+
+        return $expired >= 1 && $fresh->status === 'expired' && !$codeLeft
+            ?: json_encode(['expired' => $expired, 'status' => $fresh->status, 'codeLeft' => $codeLeft]);
+    });
+
+    check('a reminder is sent once, and a handler can take it over', function() use ($couponsService, $rulesService, $couponOwner, $tag, $storeId) {
+        $rule = $rulesService->getRuleByHandle($tag . 'WelcomeCoupon', $storeId);
+        $coupon = $couponsService->issue($rule, $couponOwner, $storeId);
+        craft\helpers\Db::update(Table::COUPONS, ['dateRemind' => craft\helpers\Db::prepareDateForDb(new DateTime('-1 minute'))], ['id' => $coupon->id]);
+
+        $seen = [];
+        $handler = static function(justinholtweb\pointz\events\CouponEvent $event) use (&$seen) {
+            $seen[] = $event->coupon->id;
+            $event->isValid = false;
+        };
+        $couponsService->on(justinholtweb\pointz\services\Coupons::EVENT_BEFORE_REMIND, $handler);
+
+        try {
+            $couponsService->remindDue();
+            $couponsService->remindDue();
+        } finally {
+            $couponsService->off(justinholtweb\pointz\services\Coupons::EVENT_BEFORE_REMIND, $handler);
+        }
+
+        $fresh = $couponsService->getCouponById($coupon->id);
+
+        $times = array_count_values($seen)[$coupon->id] ?? 0;
+
+        return $times === 1 && $fresh->dateReminded !== null ?: "reminded $times times";
+    });
+
+    check('changing a coupon’s value starts a new discount and leaves issued codes their old one', function() use ($couponsService, $rulesService, $couponOwner, $commerce, $tag, $storeId) {
+        $rule = $rulesService->getRuleByHandle($tag . 'WelcomeCoupon', $storeId);
+        $oldDiscountId = $rule->couponDiscountId;
+        $held = $couponsService->getCoupons(['userId' => $couponOwner->id, 'status' => 'active'])[0];
+
+        $rule->couponAmount = 15;
+        $rulesService->saveRule($rule);
+        $rulesService->clearMemo();
+        $rule = $rulesService->getRuleByHandle($tag . 'WelcomeCoupon', $storeId);
+        $new = $commerce->getDiscounts()->getDiscountById($rule->couponDiscountId);
+        $oldStillThere = $commerce->getDiscounts()->getDiscountById($oldDiscountId) !== null;
+
+        if ($rule->couponDiscountId === $oldDiscountId || abs($new->percentDiscount + 0.15) > 0.0001 || !$oldStillThere) {
+            return json_encode(['old' => $oldDiscountId, 'new' => $rule->couponDiscountId, 'oldStillThere' => $oldStillThere]);
+        }
+
+        // Once nobody holds a live code on the old discount, the sweep removes it.
+        foreach ($couponsService->getCoupons(['discountId' => $oldDiscountId, 'status' => 'active']) as $coupon) {
+            $couponsService->revoke($coupon);
+        }
+
+        foreach ($couponsService->getCoupons(['userId' => $couponOwner->id, 'status' => 'active']) as $coupon) {
+            if ($coupon->discountId === $oldDiscountId) {
+                $couponsService->revoke($coupon);
+            }
+        }
+
+        $removed = $couponsService->cleanUpDiscounts();
+
+        return $removed >= 1 && $commerce->getDiscounts()->getDiscountById($oldDiscountId) === null && $held->discountId === $oldDiscountId
+            ?: "removed $removed";
+    });
+
+    check('a code whose discount was deleted in Commerce stops being offered', function() use ($couponsService, $rulesService, $couponStranger, $commerce, $tag, $storeId) {
+        $rule = makeRule('doomedCoupon', ['event' => Rule::EVENT_CUSTOM, 'eventHandle' => 'doomed', 'currency' => Rule::CURRENCY_COUPON, 'couponAmount' => 5]);
+        $coupon = $couponsService->issue($rule, $couponStranger, $storeId);
+        $commerce->getDiscounts()->deleteDiscountById($rule->couponDiscountId);
+
+        $couponsService->expireDue();
+        $fresh = $couponsService->getCouponById($coupon->id);
+
+        return $fresh->status === 'revoked' && !$fresh->getIsUsable() ?: 'status ' . $fresh->status;
+    });
+
+    // ---------------------------------------------------------------------------------------
+    section('Thresholds');
+
+    check('a spending threshold buys a coupon each time the balance reaches it', function() use ($grants, $accounts, $couponsService, $ledger, $storeId) {
+        $rule = makeRule('fiftyForTen', [
+            'event' => Rule::EVENT_THRESHOLD,
+            'thresholdPoints' => 50,
+            'thresholdSpend' => true,
+            'currency' => Rule::CURRENCY_COUPON,
+            'couponAmount' => 10,
+        ]);
+        onlyRules([$rule]);
+        $user = makeUser('threshold');
+
+        $grants->grant($user->id, $storeId, Rule::CURRENCY_POINTS, 120, 'fixture');
+        $accounts->clearMemo();
+
+        $coupons = $couponsService->getCoupons(['userId' => $user->id, 'ruleId' => $rule->id]);
+        $balance = $accounts->getAccount($user->id, $storeId)->pointsBalance;
+        $spends = $ledger->getTransactionsQuery(['userId' => $user->id, 'kind' => Transaction::KIND_REWARD])->count();
+
+        return count($coupons) === 2 && $balance == 20.0 && (int)$spends === 2 && $coupons[0]->transactionId !== null
+            ?: json_encode(['coupons' => count($coupons), 'balance' => $balance, 'spends' => $spends]);
+    });
+
+    check('a threshold that keeps the points fires once, ever', function() use ($grants, $accounts, $storeId) {
+        $rule = makeRule('hundredClub', [
+            'event' => Rule::EVENT_THRESHOLD,
+            'thresholdPoints' => 100,
+            'thresholdSpend' => false,
+            'currency' => Rule::CURRENCY_CREDIT,
+            'rate' => 5,
+        ]);
+        onlyRules([$rule]);
+        $user = makeUser('club');
+
+        $grants->grant($user->id, $storeId, Rule::CURRENCY_POINTS, 150, 'fixture');
+        $grants->grant($user->id, $storeId, Rule::CURRENCY_POINTS, 150, 'fixture');
+        $accounts->clearMemo();
+        $account = $accounts->getAccount($user->id, $storeId);
+
+        return $account->pointsBalance == 300.0 && $account->creditBalance == 5.0
+            ?: json_encode(['points' => $account->pointsBalance, 'credit' => $account->creditBalance]);
+    });
+
+    check('points released from a hold can cross a threshold', function() use ($ledger, $lifecycle, $accounts, $couponsService, $storeId) {
+        $rule = makeRule('heldThreshold', [
+            'event' => Rule::EVENT_THRESHOLD,
+            'thresholdPoints' => 40,
+            'currency' => Rule::CURRENCY_COUPON,
+            'couponAmount' => 5,
+            'couponType' => Rule::COUPON_FIXED,
+        ]);
+        onlyRules([$rule]);
+        $user = makeUser('heldThreshold');
+
+        $ledger->credit($user->id, $storeId, Rule::CURRENCY_POINTS, 45, [
+            'pending' => true,
+            'dateAvailable' => new DateTime('-1 minute'),
+        ]);
+        $before = count($couponsService->getCoupons(['userId' => $user->id]));
+        $lifecycle->promoteDueLots();
+        $after = $couponsService->getCoupons(['userId' => $user->id]);
+        $accounts->clearMemo();
+
+        return $before === 0 && count($after) === 1 && $after[0]->type === 'fixed' && $accounts->getAccount($user->id, $storeId)->pointsBalance == 5.0
+            ?: json_encode(['before' => $before, 'after' => count($after)]);
+    });
+
+    check('tiers: the higher threshold first, with stop-after, takes precedence', function() use ($grants, $couponsService, $rulesService, $storeId) {
+        $twenty = makeRule('tierTwenty', ['event' => Rule::EVENT_THRESHOLD, 'thresholdPoints' => 100, 'currency' => Rule::CURRENCY_COUPON, 'couponAmount' => 20, 'stopProcessing' => true]);
+        $ten = makeRule('tierTen', ['event' => Rule::EVENT_THRESHOLD, 'thresholdPoints' => 50, 'currency' => Rule::CURRENCY_COUPON, 'couponAmount' => 10]);
+        $rulesService->reorderRules([$twenty->id, $ten->id]);
+        onlyRules([$twenty, $ten]);
+        $user = makeUser('tiers');
+
+        $grants->grant($user->id, $storeId, Rule::CURRENCY_POINTS, 100, 'fixture');
+        $coupons = $couponsService->getCoupons(['userId' => $user->id]);
+
+        return count($coupons) === 1 && $coupons[0]->amount == 20.0
+            ?: json_encode(array_map(static fn($c) => $c->amount, $coupons));
+    });
+
+    // ---------------------------------------------------------------------------------------
+    section('Reviews and birthdays');
+
+    $reviewClass = 'justinholtweb\stars\elements\Review';
+    $createdReviews = [];
+
+    $makeReview = static function(User $user, ?int $entryId, ?string $text, string $status = 'approved') use ($reviewClass, &$createdReviews) {
+        $review = new $reviewClass();
+        $review->reviewerName = 'Pointz fixture';
+        $review->reviewerEmail = $user->email;
+        $review->rating = 5;
+        $review->reviewText = $text;
+        $review->entryId = $entryId;
+        $review->reviewStatus = $status;
+
+        if (!Craft::$app->getElements()->saveElement($review)) {
+            throw new RuntimeException('Could not save review: ' . json_encode($review->getErrors()));
+        }
+
+        $createdReviews[] = $review;
+
+        return $review;
+    };
+
+    check('an approved Stars review pays once, however often it is saved', function() use ($makeReview, $accounts, $storeId, $reviewClass) {
+        if (!class_exists($reviewClass)) {
+            return true;
+        }
+
+        $rule = makeRule('review', ['event' => Rule::EVENT_REVIEW, 'rate' => 10]);
+        onlyRules([$rule]);
+        $user = makeUser('reviewer');
+
+        $pending = $makeReview($user, null, 'Lovely book.', 'pending');
+        $accounts->clearMemo();
+        $beforeApproval = $accounts->getAccount($user->id, $storeId)?->pointsBalance ?? 0.0;
+
+        $pending->reviewStatus = 'approved';
+        Craft::$app->getElements()->saveElement($pending);
+        Craft::$app->getElements()->saveElement($pending);
+        $accounts->clearMemo();
+        $after = $accounts->getAccount($user->id, $storeId)?->pointsBalance;
+
+        return $beforeApproval == 0.0 && $after == 10.0 ?: "before $beforeApproval, after $after";
+    });
+
+    check('a review without text does not count when the rule asks for text', function() use ($makeReview, $accounts, $storeId, $reviewClass) {
+        if (!class_exists($reviewClass)) {
+            return true;
+        }
+
+        $rule = makeRule('reviewText', ['event' => Rule::EVENT_REVIEW, 'rate' => 10, 'reviewRequiresText' => true]);
+        onlyRules([$rule]);
+        $user = makeUser('starsOnly');
+        $makeReview($user, null, '   ');
+        $accounts->clearMemo();
+
+        return ($accounts->getAccount($user->id, $storeId)?->pointsBalance ?? 0.0) == 0.0 ?: 'a bare rating was paid';
+    });
+
+    check('“purchased products only” pays for a product the customer bought and not for one they did not', function() use ($makeReview, $accounts, $storeId, $reviewClass, $variantA, $product, $productB) {
+        if (!class_exists($reviewClass)) {
+            return true;
+        }
+
+        $rule = makeRule('reviewBought', ['event' => Rule::EVENT_REVIEW, 'rate' => 10, 'reviewPurchasedOnly' => true]);
+        onlyRules([$rule]);
+        $user = makeUser('buyer');
+        completeOrder(makeCart($user, $variantA, 1));
+
+        $makeReview($user, $productB->id, 'Never bought this.');
+        $accounts->clearMemo();
+        $notBought = $accounts->getAccount($user->id, $storeId)?->pointsBalance ?? 0.0;
+
+        $makeReview($user, $product->id, 'Bought this one.');
+        $accounts->clearMemo();
+        $bought = $accounts->getAccount($user->id, $storeId)?->pointsBalance ?? 0.0;
+
+        return $notBought == 0.0 && $bought == 10.0 ?: "not bought $notBought, bought $bought";
+    });
+
+    check('a birthday is paid once a year, in its grace window, and 29 February falls on the 28th', function() use ($rewards, $accounts, $couponsService, $storeId) {
+        $field = 'mzPromoCity';
+
+        if (Craft::$app->getFields()->getFieldByHandle($field) === null) {
+            return true;
+        }
+
+        $rule = makeRule('birthday', [
+            'event' => Rule::EVENT_BIRTHDAY,
+            'birthdayField' => $field,
+            'currency' => Rule::CURRENCY_COUPON,
+            'couponAmount' => 14.99,
+            'couponValidDays' => 90,
+        ]);
+        onlyRules([$rule]);
+
+        $today = new DateTime('2026-10-03', new DateTimeZone(Craft::$app->getTimeZone()));
+        $due = makeUser('birthdayDue');
+        $due->setFieldValue($field, '1990-10-01');
+        Craft::$app->getElements()->saveElement($due);
+        $later = makeUser('birthdayLater');
+        $later->setFieldValue($field, '1985-12-25');
+        Craft::$app->getElements()->saveElement($later);
+
+        $paid = $rewards->runBirthdays($today);
+        $again = $rewards->runBirthdays($today);
+        $leap = $rewards->birthdayThisYear('2000-02-29', $today)->format('m-d');
+
+        $dueCoupons = $couponsService->getCoupons(['userId' => $due->id]);
+        $laterCoupons = $couponsService->getCoupons(['userId' => $later->id]);
+
+        return $paid === 1 && $again === 0 && count($dueCoupons) === 1 && $laterCoupons === [] && $leap === '02-28'
+            && $dueCoupons[0]->reference === 'birthday:2026'
+            ?: json_encode(['paid' => $paid, 'again' => $again, 'due' => count($dueCoupons), 'later' => count($laterCoupons), 'leap' => $leap]);
+    });
+
 } finally {
     $plugin->edition = $originalEdition;
     Plugin::getInstance()->setSettings($originalSettings->toArray());
@@ -1218,6 +1742,18 @@ try {
         }
     }
 
+    foreach ($createdReviews ?? [] as $review) {
+        $elements->deleteElement($review, true);
+    }
+
+    // The discounts coupon rules created, current and replaced, so nothing outlives the run.
+    $userIds = array_map(static fn(User $user) => $user->id, $createdUsers);
+    $ruleIds = array_map(static fn(Rule $rule) => $rule->id, $createdRules);
+    $discountIds = array_unique(array_merge(
+        (new Query())->select(['discountId'])->from(Table::COUPONS)->where(['userId' => $userIds ?: [0]])->andWhere(['not', ['discountId' => null]])->column(),
+        (new Query())->select(['couponDiscountId'])->from(Table::RULES)->where(['id' => $ruleIds ?: [0]])->andWhere(['not', ['couponDiscountId' => null]])->column(),
+    ));
+
     foreach ($createdRules as $rule) {
         Plugin::getInstance()->getRules()->deleteRuleById($rule->id);
     }
@@ -1229,6 +1765,10 @@ try {
         if ($fresh) {
             $elements->deleteElement($fresh, true);
         }
+    }
+
+    foreach ($discountIds as $discountId) {
+        Commerce::getInstance()->getDiscounts()->deleteDiscountById((int)$discountId);
     }
 }
 

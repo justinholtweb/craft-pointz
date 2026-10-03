@@ -68,6 +68,130 @@ Three condition builders, all of which match everything when left empty:
 - **Matching products** — only used by a line-item rule. SKU, purchasable, type or product
   category, the same four Commerce offers its own catalog pricing rules.
 
+## Rewards that are not an order *(Pro)*
+
+A rule's **Earned for** setting can be something other than a completed order. Every one of these
+is a rule like any other: a customer condition, a campaign window, a per-customer cap and an
+expiry all apply, and rules run top to bottom with *stop after this one* ending the run. Each
+trigger pays a customer **once per occurrence**: once per review, once per birthday per year, once
+per signup. Re-saving the thing that triggered it cannot pay twice.
+
+What a rule hands out depends on the trigger:
+
+| Earned for | Points | Store credit | Coupon |
+| --- | --- | --- | --- |
+| A completed order | ✅ | ✅ | |
+| A new customer account | ✅ | ✅ | ✅ |
+| An approved review (Stars) | ✅ | ✅ | ✅ |
+| A customer's birthday | ✅ | ✅ | ✅ |
+| Reaching a points balance | | ✅ | ✅ |
+| A custom event | ✅ | ✅ | ✅ |
+
+For anything but an order, **Rate** is simply the amount to award.
+
+### A new customer account
+
+Fires when a user is created. In Lite this is the one non-order trigger, and it awards points.
+Pro adds store credit and coupons, so a welcome coupon is one rule.
+
+### A custom event
+
+The generic hook. Give the rule an **event handle**, and anything that fires that handle pays out:
+
+- `formie:newsletter` fires when the Formie form with the handle `newsletter` is submitted.
+  Spam and incomplete submissions don't count. The customer is the signed-in submitter, or
+  failing that, the account matching the form's first email field.
+- `dispatch:club` fires when someone subscribes to the Dispatch list `club` from the site.
+  A CSV import, or a subscriber added in the control panel, doesn't pay a welcome reward to
+  a whole list.
+- Anything else is yours to fire from a module:
+
+```php
+use justinholtweb\pointz\Plugin;
+
+// A user, a user ID or an email address.
+Plugin::getInstance()->getRewards()->awardEvent($user, 'attendedWorkshop');
+
+// With a reference, the same customer can be paid again for a different occurrence.
+Plugin::getInstance()->getRewards()->awardEvent($user, 'attendedWorkshop', reference: 'workshop:2026-10');
+```
+
+A handle ending in `*` matches several events: `formie:*` answers every Formie form. Without a
+reference, a rule pays each customer once, ever.
+
+### An approved review
+
+Needs [Stars](https://justinholt.com/plugins/craft-stars). The rule fires when a review is
+approved, whether by the bulk action or on the review's own page, and pays once per review,
+however often it is saved afterwards.
+
+Stars records a reviewer's email rather than a user, so the customer is the account with that
+email. A review from someone without an account earns nothing. Two options:
+
+- **Only reviews with written text.** On by default. Stars always stores a rating, so this is what
+  separates a review from a click on a star.
+- **Only products the customer bought.** The reviewed entry must be a product from one of the
+  customer's completed orders, or related to one in either direction: a product with an entries
+  field pointing at its review page, or a review entry with a products field pointing at the
+  product.
+
+Asking customers for a review after they buy is Stars' job rather than Pointz's, and is tracked
+there.
+
+### A customer's birthday
+
+Choose the **user field** that holds the date of birth: a Date field, or a plain text field holding
+something like `1990-03-14`. Birthdays are paid by `pointz/sweep/run`, so schedule it daily. A
+missed night is caught up for up to six days afterwards, which also covers a customer who
+registers the week after their birthday. Each customer is paid once per year. Someone born on
+29 February is paid on the 28th in other years.
+
+### Reaching a points balance
+
+Fires when a customer's **available** points reach the rule's **balance**: after an earn, a grant,
+a refund handing points back, or a hold being released.
+
+- With **Spend the points** on, the balance pays for the reward: an ordinary ledger debit of
+  that many points, shown as *Exchanged*, and then the coupon or credit. It fires again each time
+  the balance gets back there. If the balance is enough for several rewards at once, the
+  customer gets all of them, up to 20 in one go. This is "every 500 points becomes €5 of credit".
+- With it off, the balance is left alone and the rule fires once per customer, ever. This is a
+  milestone.
+
+If the reward can't be issued, the debit is returned. For tiers, put the higher rule first and
+switch on *stop after this one*: a customer reaching 100 gets the 20% coupon, not both.
+
+## Coupons as a reward *(Pro)*
+
+Set **Awards** to *A coupon* and the rule issues a **single-use Commerce coupon code to one
+customer**: a percentage or a fixed amount off the order, optionally expiring after a number of
+days, optionally with a reminder email before it does.
+
+Commerce coupons have no owner and no expiry of their own, which is why shops doing this by hand
+end up with one discount per customer. Pointz keeps **one Commerce discount per rule** and adds a
+code to it each time it issues one:
+
+- The discount is created when the rule is saved, named `Pointz: <rule> (<value>)`. Find it under
+  **Commerce → Promotions → Discounts** to narrow it, for example by excluding products or
+  setting a minimum order. Change the value on the rule, though: a new value starts a new
+  discount, so a code already in someone's inbox keeps what it was issued with.
+- A code only discounts the order of **the customer it was issued to**, and only until it expires.
+  Pointz checks both every time Commerce matches the discount. Commerce makes whoever owns an
+  email the customer of a guest cart that types it in, so the owner can use their code without
+  signing in, and anybody else would need both their email and the code.
+- Commerce enforces the single use and counts it. Pointz records which order the code went on.
+- `pointz/sweep/run` expires codes past their date and **deletes them from Commerce**, sends the
+  reminders that are due, and removes discounts that nothing issues against any more. Pointz keeps
+  its own record of every code, so the customer's history still says what they had.
+- As with any Commerce discount, only **promotable** products are discounted.
+
+The two emails, *When Pointz issues a coupon* and *When a Pointz coupon is about to expire*, are
+edited under **Utilities → System Messages**, like Craft's own. Both are optional per rule. To send
+them some other way, see `Coupons::EVENT_BEFORE_REMIND` in [Twig and events](twig.md).
+
+A customer's coupons are listed on their balance page in the control panel, where a live one can
+be revoked, and in templates through `craft.pointz.coupons()`.
+
 ## Redeeming on the front end
 
 The customer's request is stored as **intent** against the cart and re-clamped on every
@@ -160,8 +284,8 @@ decision in Commerce's own screens.
 - **Balances** — every customer holding value in a store, with the store's total liability in
   points and in money at the top.
 - **A customer's page** — their balance, where it sits (the lots, in the order a spend will take
-  them), their whole history, a box for moving the balance by hand, and a *Rebuild from the
-  ledger* button, which is the support answer to "the number looks wrong".
+  them), their coupons, their whole history, a box for moving the balance by hand, and a
+  *Rebuild from the ledger* button, which is the support answer to "the number looks wrong".
 - **Ledger** — every movement, filterable by store, kind and currency, exportable as CSV on Pro.
 - **Order edit screen** — what that order earned and spent, and a link to the customer's balance.
 - **Dashboard widget** *(Pro)* — the unredeemed liability, in points and in money.
@@ -169,7 +293,8 @@ decision in Commerce's own screens.
 ## The console
 
 ```sh
-# Release held value, expire what is past its date, close idle balances. Schedule this daily.
+# Release held value, expire what is past its date, close idle balances, pay birthdays, expire
+# coupons and send their reminders. Schedule this daily.
 php craft pointz/sweep/run
 
 # The pieces, if you want them on different schedules
@@ -177,6 +302,8 @@ php craft pointz/sweep/promote
 php craft pointz/sweep/expire
 php craft pointz/sweep/inactive
 php craft pointz/sweep/expiring 30      # what is about to expire, and whose
+php craft pointz/sweep/birthdays        # Pro
+php craft pointz/sweep/coupons          # expire, remind, clean up discounts
 
 # Rebuild every cached balance from the lots. Harmless; run it after a restore.
 php craft pointz/accounts/recalculate

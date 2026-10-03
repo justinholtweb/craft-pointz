@@ -2,7 +2,8 @@
 
 Loyalty points and store credit for Craft Commerce 5. Earning rules a merchandiser can write, a
 ledger that expires and reverses correctly, and redemption at checkout that never spends anything
-until the order completes.
+until the order completes. Customers can also be rewarded for reviews, birthdays, signups and
+milestones, with points, credit or single-use coupons.
 
 WooCommerce shops have had *Points and Rewards* for a decade. Craft has had gift vouchers and
 wishlists from Verbb and affiliates from Kickback, and nothing at all for loyalty. Pointz is that
@@ -60,6 +61,8 @@ start paying out on a live store before anyone has read the numbers.
 | Backfill with a dry run and an undo | | ✅ |
 | Ledger CSV export | | ✅ |
 | Liability dashboard widget | | ✅ |
+| Rewards for an approved review (Stars), a birthday, a points milestone, or a custom event from Formie, Dispatch or your own code | | ✅ |
+| **Coupons as a reward**: single-use, one customer, optional expiry and reminder email, one Commerce discount per rule | | ✅ |
 
 Refund reversal and holds are deliberately in **Lite**. A free edition that over-awards is a bug,
 not an upsell.
@@ -73,6 +76,15 @@ not an upsell.
 | Points on every order | 1 per unit of item subtotal | Once per order | Always |
 | Double points on outdoor gear | 1 per unit of line subtotal, ×2 | Per matching line item | Always |
 | Launch weekend | 5 per unit of order total | Once per order | Fri–Sun |
+
+**And rules for things that aren't an order:**
+
+| Rule | Earned for | Awards |
+| --- | --- | --- |
+| Welcome | A Formie newsletter signup | A 10% coupon, valid 30 days |
+| Thanks for the review | An approved review with text, of something they bought | 10 points |
+| Happy birthday | The customer's birthday | A 15% coupon, valid 90 days, reminder 14 days before |
+| Club reward | Reaching 500 points, spending them | €5 of store credit |
 
 **Redemption** on the front end is one form:
 
@@ -113,6 +125,11 @@ a shortfall rather than pushing a balance negative.
 idle balances, and every one of those writes a ledger row saying what happened. Nothing evaporates
 without an audit trail.
 
+**A coupon belongs to one customer without one discount per customer.** Commerce coupons have no
+owner and no expiry, so doing this by hand means a discount per customer, and a thousand dead rows.
+Pointz keeps one discount per rule, adds a single-use code each time it issues one, and checks the
+owner and the expiry whenever Commerce matches the discount. Expired codes are deleted by the sweep.
+
 **Awarding is idempotent.** An order that has earned cannot earn again, whatever fires the handler
 — a completion retried after a payment hiccup, a status change that runs twice, a backfill over
 the same window.
@@ -129,7 +146,7 @@ the same window.
 ## Console
 
 ```sh
-php craft pointz/sweep/run                 # schedule this daily
+php craft pointz/sweep/run                 # schedule this daily: expiry, birthdays, coupons
 php craft pointz/accounts/recalculate      # rebuild every balance from the ledger
 php craft pointz/grant/to-group customers 250
 php craft pointz/backfill/plan --from=2026-01-01

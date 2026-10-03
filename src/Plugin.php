@@ -649,10 +649,12 @@ class Plugin extends BasePlugin
                 }
 
                 $record = $event->sender;
+                $subscriberClass = 'justinholtweb\\dispatch\\elements\\Subscriber';
+                $listClass = 'justinholtweb\\dispatch\\elements\\MailingList';
 
                 try {
-                    $subscriber = \justinholtweb\dispatch\elements\Subscriber::find()->id($record->subscriberId)->status(null)->one();
-                    $list = \justinholtweb\dispatch\elements\MailingList::find()->id($record->mailingListId)->status(null)->one();
+                    $subscriber = $subscriberClass::find()->id($record->subscriberId)->status(null)->one();
+                    $list = $listClass::find()->id($record->mailingListId)->status(null)->one();
 
                     if (!$subscriber || !$list) {
                         return;
