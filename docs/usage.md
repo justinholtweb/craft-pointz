@@ -119,6 +119,31 @@ Plugin::getInstance()->getRewards()->awardEvent($user, 'attendedWorkshop', refer
 A handle ending in `*` matches several events: `formie:*` answers every Formie form. Without a
 reference, a rule pays each customer once, ever.
 
+#### People without an account
+
+A newsletter subscriber often has no account. By default an event for an email address nobody has
+an account for is ignored. Switch on **Pay people without an account** and Pointz creates an
+inactive account for the address — the same kind Commerce creates for a guest checkout — and pays
+that:
+
+- A coupon is emailed to the address as usual, and works at checkout whether they check out as a
+  guest with that email or register first.
+- Registering later with the same address reuses the account, so a reward is waiting for them.
+- One reward per address: subscribing again finds the same account, which the rule has already
+  paid.
+- The signup bonus doesn't fire for an account Pointz creates this way.
+
+This works from every path that brings an email: a Formie form's email field, a Dispatch
+subscriber, or your own code. For a double opt-in, fire the event from the confirmation rather
+than the form:
+
+```php
+// e.g. in a handler for your mailing-list plugin's "subscription verified" event
+Plugin::getInstance()->getRewards()->awardEvent($subscriberEmail, 'newsletter:verified');
+```
+
+Only rules with the option on create accounts, and only for a handle they answer.
+
 ### An approved review
 
 Needs [Stars](https://justinholt.com/plugins/craft-stars). The rule fires when a review is
@@ -314,6 +339,11 @@ php craft pointz/grant/to-user someone@example.com 500 --note="Sorry about the o
 php craft pointz/grant/to-group customers 250 --dryRun=1
 php craft pointz/grant/revert <batch-id>
 
+# Bring a programme over from another system (see below)
+php craft pointz/import/balances balances.csv --dry-run
+php craft pointz/import/coupons coupons.csv --remind-days=14 --dry-run
+php craft pointz/import/revert <batch-id>
+
 # Award orders that completed before a rule existed (Pro)
 php craft pointz/backfill/plan --from=2026-01-01
 php craft pointz/backfill/run --from=2026-01-01
@@ -323,3 +353,80 @@ php craft pointz/backfill/revert <batch-id>
 Every bulk operation carries a batch ID, and `revert` takes back whatever is left of what the
 batch gave. Value a customer has already spent cannot come back, and the command says how many
 accounts fell short rather than pushing a balance negative to make the arithmetic tidy.
+
+## Moving from another loyalty system
+
+`pointz/import` brings over what customers are holding today: their balances, and coupons the old
+system has already sent them. Both read a CSV file with a header row, run as one batch that
+`pointz/import/revert` undoes, and can be checked first with `--dry-run`, which reads every row
+and writes nothing.
+
+### Balances
+
+One row per parcel of value. A customer with points expiring on two dates has two rows.
+
+| Column | |
+| --- | --- |
+| `user` | A user ID or email address. (`email` works as the column name too.) |
+| `amount` | Positive. |
+| `currency` | `points` or `credit` *(Pro)*. Defaults to `--currency`, which defaults to points. |
+| `expires` | When it expires, in the system time zone. A date without a time is the start of that day. Empty means never. |
+| `note` | Shown in the ledger. Defaults to `--note`, then "Opening balance". |
+| `reference` | Your old system's ID for the row. Optional, but see below. |
+
+Each row becomes one lot through the ledger, of kind *Imported*, so it expires, is spent
+soonest-first and reverses like any other value. A row whose expiry has passed is skipped.
+
+Pointz imports balances, not history. Replaying years of another system's movements only lands on
+the right balance if both systems agreed on every rule along the way; what has to come out right is
+what each customer holds today. Keep the old history readable where it is, or put a pointer to it
+in the note.
+
+**Running it twice.** Without a `reference` column a row is known by the file it came from and its
+line, so running the same file again skips everything. If you might correct the file and run it
+again, give each row a `reference`: rows already imported are then skipped whatever else changed in
+the file. Reverting a batch makes its rows importable again.
+
+**Thresholds.** Imported points cross no threshold rule. The old programme already paid whatever
+its customers' balances had reached; the next real arrival of points evaluates thresholds against
+the whole balance, so set a *spend* threshold's level with that in mind.
+
+Imports still raise `Ledger::EVENT_AFTER_TRANSACTION`. A handler that tells customers about points
+they earned should skip `$event->transaction->kind === Transaction::KIND_IMPORT`.
+
+### Coupons *(Pro)*
+
+Outstanding codes are taken over, not reissued: the code stays on the Commerce discount it is
+already on, and the customer keeps the code they were sent. Pointz records who owns it and when it
+expires, and from then on treats it like a code it issued — it only discounts its owner's order,
+it is marked used when that order completes, its reminder goes out, the sweep retires it when it
+expires, and **the discount is deleted once its last code is used or expired**. A store with a
+discount per customer ends up with none of them.
+
+| Column | |
+| --- | --- |
+| `code` | The Commerce coupon code. Case doesn't matter. |
+| `user` | The customer it belongs to: an ID or email address. |
+| `expires` | Optional. Defaults to the discount's own end date. |
+| `issued` | Optional. When the old system sent it, for the customer's history. |
+| `remind` | Optional. When to send the expiry reminder. Defaults to `--remind-days` before the expiry, if given. |
+
+The value shown to the customer is read from the discount: its percentage off, or its amount off.
+
+What is refused, with the reason on the line:
+
+- **A discount with codes the file doesn't list.** Once Pointz manages a discount, only codes it
+  knows the owner of work on it. A merchant's shared code on the same discount would quietly stop
+  working, so the whole discount is refused instead.
+- A discount that applies without a code, or takes neither a percentage nor an amount off (free
+  shipping, for example).
+- A code that can be used more than once. A code with no use limit is set to one use, since that
+  is what a Pointz coupon is; the command says how many it changed.
+- A code that has already been used, or has expired, is skipped.
+
+The dry run lists every discount Pointz would take over. Read it: they are the discounts the sweep
+will delete when their codes are done.
+
+`pointz/import/revert` hands unused codes back to Commerce, untouched. A code that has been used or
+has expired since stays in Pointz's history, and a discount the sweep has already deleted stays
+deleted.

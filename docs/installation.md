@@ -66,15 +66,17 @@ Two permissions, both under **Pointz** in the user group settings:
 **Manage earning rules** is separate: writing a rule that awards double points is a commercial
 decision, not a support one.
 
-## Upgrading from WooCommerce
+## Moving from WooCommerce or another loyalty plugin
 
-Pointz has no importer, because a WooCommerce points log has no lots in it — only a running total.
-The honest migration is:
+A WooCommerce points log has no lots in it, only a running total, so Pointz imports what each
+customer holds today rather than the history:
 
-1. Export each customer's current balance from WooCommerce.
-2. Grant it with `pointz/grant/to-user`, or in bulk with a short script calling
-   `Plugin::getInstance()->getGrants()->grantMany()`.
-3. Leave the history behind. It stays readable in WooCommerce, and Pointz's own ledger starts
-   clean on a date you can point to.
+1. Export each customer's current balance, one row per expiry date if the old system has them.
+2. Run `pointz/import/balances` on it, with `--dry-run` first.
+3. If the old system issued coupons, run `pointz/import/coupons` too, and Pointz takes over their
+   ownership, reminders and clean-up. *(Pro)*
+4. Leave the history behind. It stays readable in the old system, and Pointz's ledger starts on a
+   date you can point to.
 
-Granting a balance under one batch ID means a mistake in the export can be undone in one command.
+Each import is one batch, so a mistake in the export is undone with `pointz/import/revert`. See
+[Moving from another loyalty system](usage.md#moving-from-another-loyalty-system) for the columns.

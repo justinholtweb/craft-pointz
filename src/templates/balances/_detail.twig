@@ -118,7 +118,7 @@
                     <tr>
                         <th scope="row"><code>{{ coupon.code }}</code></th>
                         <td>{{ coupon.valueLabel }}</td>
-                        <td class="light">{{ coupon.rule.name ?? '—' }}</td>
+                        <td class="light">{{ coupon.rule.name ?? (coupon.reference starts with 'import:' ? 'Imported'|t('pointz') : '—') }}</td>
                         <td class="light">{{ coupon.dateCreated|datetime('short') }}</td>
                         <td>{{ coupon.dateExpires ? coupon.dateExpires|date('short') : "Never"|t('pointz') }}</td>
                         <td>

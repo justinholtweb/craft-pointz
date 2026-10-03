@@ -164,6 +164,7 @@ class Install extends Migration
             'birthdayField' => $this->string(),
             'reviewRequiresText' => $this->boolean()->notNull()->defaultValue(true),
             'reviewPurchasedOnly' => $this->boolean()->notNull()->defaultValue(false),
+            'createAccount' => $this->boolean()->notNull()->defaultValue(false),
             // What a coupon rule hands out. The Commerce discount is created by the rule and
             // replaced, never edited, when the amount changes — so a code already issued keeps
             // the value it was issued with.

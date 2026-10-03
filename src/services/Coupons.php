@@ -568,6 +568,14 @@ class Coupons extends Component
     }
 
     /**
+     * Forgets the managed discount IDs, after something other than this service changed them.
+     */
+    public function clearMemo(): void
+    {
+        $this->_managedDiscountIds = null;
+    }
+
+    /**
      * A code nobody has: `PZ-` and eight characters that cannot be misread.
      */
     public function generateCode(): string

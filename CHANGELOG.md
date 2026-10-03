@@ -1,5 +1,29 @@
 # Release Notes for Pointz
 
+## Unreleased
+
+### Added
+
+- `pointz/import/balances`, which loads opening balances from a CSV file: one lot per row, each with
+  its own expiry date, of a new *Imported* ledger kind. Rows already imported are skipped, by their
+  `reference` column or by file and line, and imported points cross no threshold rule.
+- `pointz/import/coupons` *(Pro)*, which takes over coupon codes another system already issued in
+  Commerce. Pointz records each code's owner and expiry, enforces them at checkout, sends its
+  reminder, and deletes the old per-customer discount once its last code is used or expired. A
+  discount with codes the file does not list is refused whole.
+- `pointz/import/revert`, which takes back what is left of an imported balance and hands unused
+  coupons back to Commerce.
+- `Import` service (`Plugin::getInstance()->getImport()`) and `Coupons::clearMemo()`.
+- **Pay people without an account**, an option on custom-event rules *(Pro)*. An event for an email
+  address with no account creates an inactive one, as Commerce does for a guest checkout, and pays
+  it — so a newsletter signup can earn a welcome coupon that is waiting when the subscriber
+  registers. One reward per address; the signup bonus doesn't fire for these accounts.
+
+### Changed
+
+- A Formie submission from someone without an account now passes their email to `awardEvent()`, so
+  a rule with *Pay people without an account* on can pay them.
+
 ## 5.1.0 - 2026-10-03
 
 ### Added

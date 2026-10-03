@@ -150,6 +150,7 @@ class RulesController extends Controller
             $rule->birthdayField = $this->request->getBodyParam('birthdayField') ?: null;
             $rule->reviewRequiresText = (bool)$this->request->getBodyParam('reviewRequiresText', $rule->reviewRequiresText);
             $rule->reviewPurchasedOnly = (bool)$this->request->getBodyParam('reviewPurchasedOnly', $rule->reviewPurchasedOnly);
+            $rule->createAccount = (bool)$this->request->getBodyParam('createAccount', $rule->createAccount);
             $rule->couponType = $this->request->getBodyParam('couponType', $rule->couponType);
             $rule->couponAmount = $this->_number($this->request->getBodyParam('couponAmount'));
             $rule->couponValidDays = $this->_int($this->request->getBodyParam('couponValidDays'));

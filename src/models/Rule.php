@@ -109,6 +109,9 @@ class Rule extends Model
     /** Whether the reviewed entry has to be, or be related to, something the customer bought. */
     public bool $reviewPurchasedOnly = false;
 
+    /** Whether a custom event for an email nobody has an account for creates an inactive one to pay. */
+    public bool $createAccount = false;
+
     public string $couponType = self::COUPON_PERCENT;
     public ?float $couponAmount = null;
     public ?int $couponValidDays = null;
@@ -320,7 +323,7 @@ class Rule extends Model
             [['multiplier'], 'number', 'min' => 0],
             [['minAward', 'maxAward', 'maxPerUser'], 'number', 'min' => 0],
             [['expireAfterDays', 'couponValidDays', 'couponRemindDays'], 'integer', 'min' => 1],
-            [['enabled', 'firstOrderOnly', 'stopProcessing', 'thresholdSpend', 'reviewRequiresText', 'reviewPurchasedOnly', 'couponNotify'], 'boolean'],
+            [['enabled', 'firstOrderOnly', 'stopProcessing', 'thresholdSpend', 'reviewRequiresText', 'reviewPurchasedOnly', 'createAccount', 'couponNotify'], 'boolean'],
             [['dateTo'], 'validateWindow'],
             [['maxAward'], 'validateAwardRange'],
             [['currency'], 'validateCurrency'],
@@ -464,6 +467,7 @@ class Rule extends Model
             'thresholdSpend' => Craft::t('pointz', 'Spend the points'),
             'birthdayField' => Craft::t('pointz', 'Birthday field'),
             'reviewRequiresText' => Craft::t('pointz', 'Only reviews with written text'),
+            'createAccount' => Craft::t('pointz', 'Pay people without an account'),
             'reviewPurchasedOnly' => Craft::t('pointz', 'Only products the customer bought'),
             'couponType' => Craft::t('pointz', 'Coupon'),
             'couponAmount' => Craft::t('pointz', 'Coupon value'),

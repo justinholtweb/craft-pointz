@@ -35,6 +35,7 @@ use justinholtweb\pointz\services\Backfill;
 use justinholtweb\pointz\services\Coupons;
 use justinholtweb\pointz\services\Earning;
 use justinholtweb\pointz\services\Grants;
+use justinholtweb\pointz\services\Import;
 use justinholtweb\pointz\services\Ledger;
 use justinholtweb\pointz\services\Lifecycle;
 use justinholtweb\pointz\services\Redemption;
@@ -68,7 +69,7 @@ class Plugin extends BasePlugin
     public const EDITION_LITE = 'lite';
     public const EDITION_PRO = 'pro';
 
-    public string $schemaVersion = '5.1.0';
+    public string $schemaVersion = '5.2.0';
     public bool $hasCpSettings = true;
     public bool $hasCpSection = true;
 
@@ -100,6 +101,7 @@ class Plugin extends BasePlugin
                 'backfill' => ['class' => Backfill::class],
                 'coupons' => ['class' => Coupons::class],
                 'rewards' => ['class' => Rewards::class],
+                'import' => ['class' => Import::class],
             ],
         ];
     }
@@ -198,6 +200,11 @@ class Plugin extends BasePlugin
     public function getRewards(): Rewards
     {
         return $this->get('rewards');
+    }
+
+    public function getImport(): Import
+    {
+        return $this->get('import');
     }
 
     /**
@@ -521,6 +528,11 @@ class Plugin extends BasePlugin
                     return;
                 }
 
+                // An account Pointz made for a newsletter address is not somebody signing up.
+                if (Plugin::getInstance()->getRewards()->isCreatingAccount()) {
+                    return;
+                }
+
                 try {
                     Plugin::getInstance()->getEarning()->awardSignup($user);
                 } catch (\Throwable $e) {
@@ -564,6 +576,12 @@ class Plugin extends BasePlugin
                 $transaction = $event->transaction;
 
                 if ($transaction->currency !== Rule::CURRENCY_POINTS || $transaction->status !== Transaction::STATUS_POSTED) {
+                    return;
+                }
+
+                // An imported opening balance was earned under the old programme, which already
+                // paid whatever thresholds it crossed. The next real arrival evaluates them.
+                if ($transaction->kind === Transaction::KIND_IMPORT) {
                     return;
                 }
 
@@ -612,12 +630,14 @@ class Plugin extends BasePlugin
                 }
 
                 try {
+                    // The submitter's account, or the first email they gave: `awardEvent()` finds
+                    // its owner, or creates an account for it if a rule asks.
                     $user = $submission->getUser();
 
                     if ($user === null) {
                         foreach ($submission->getFieldValuesForField('verbb\formie\fields\Email') as $email) {
                             if (is_string($email) && $email !== '') {
-                                $user = Plugin::getInstance()->getRewards()->resolveUser($email);
+                                $user = $email;
                                 break;
                             }
                         }

@@ -49,6 +49,8 @@ class Rewards extends Component
      */
     public const THRESHOLD_MAX_REPEATS = 20;
 
+    private bool $_creatingAccount = false;
+
     /**
      * Pays out one rule to one customer.
      *
@@ -176,27 +178,52 @@ class Rewards extends Component
      * when the same customer may legitimately be rewarded again for a different instance of the
      * event; leave it out and the rule pays each customer once.
      *
+     * An email address nobody has an account for is ignored, unless a matching rule has *Pay people
+     * without an account* on: then an inactive account is created for it, as Commerce does for a
+     * guest checkout, and paid. Registering later with that address reuses the account, so the
+     * reward is waiting — and because a rule pays an account once, an address that subscribes
+     * again is not paid again.
+     *
      * @param User|int|string $user A user, their ID, or their email address.
      * @return array<int, Transaction|Coupon>
      */
     public function awardEvent(User|int|string $user, string $handle, ?int $storeId = null, ?string $reference = null, array $context = []): array
     {
-        $user = $this->resolveUser($user);
         $storeId ??= $this->_primaryStoreId();
 
-        if ($user === null || $storeId === null) {
+        if ($storeId === null) {
+            return [];
+        }
+
+        $matches = static fn(Rule $rule) => $rule->eventHandle !== null && fnmatch($rule->eventHandle, $handle);
+        $resolved = $this->resolveUser($user);
+
+        if ($resolved === null && is_string($user)) {
+            $resolved = $this->_createAccountFor($user, $storeId, $matches);
+        }
+
+        if ($resolved === null) {
             return [];
         }
 
         return $this->awardForEvent(
             Rule::EVENT_CUSTOM,
-            $user,
+            $resolved,
             $storeId,
             $reference,
             array_merge($context, ['handle' => $handle]),
             false,
-            static fn(Rule $rule) => $rule->eventHandle !== null && fnmatch($rule->eventHandle, $handle),
+            $matches,
         );
+    }
+
+    /**
+     * Whether Pointz is creating an account for an event right now. The signup bonus is for people
+     * who sign up, not for an address Pointz made an account for, so it stands aside.
+     */
+    public function isCreatingAccount(): bool
+    {
+        return $this->_creatingAccount;
     }
 
     /**
@@ -593,6 +620,45 @@ class Rewards extends Component
             Rule::EVENT_BIRTHDAY => Craft::t('pointz', 'Birthday reward: {rule}', ['rule' => $rule->name]),
             default => $rule->name,
         };
+    }
+
+    /**
+     * An inactive account for an email address, if a rule that would pay it asks for one.
+     *
+     * @param callable(Rule): bool $matches
+     */
+    private function _createAccountFor(string $email, int $storeId, callable $matches): ?User
+    {
+        $email = trim($email);
+
+        if ($email === '' || ctype_digit($email) || !Plugin::getInstance()->getSettings()->earningEnabled) {
+            return null;
+        }
+
+        $wanted = false;
+
+        foreach (Plugin::getInstance()->getRules()->getActiveRules($storeId, Rule::EVENT_CUSTOM) as $rule) {
+            if ($rule->createAccount && $matches($rule)) {
+                $wanted = true;
+                break;
+            }
+        }
+
+        if (!$wanted) {
+            return null;
+        }
+
+        $this->_creatingAccount = true;
+
+        try {
+            return Craft::$app->getUsers()->ensureUserByEmail($email);
+        } catch (\Throwable $e) {
+            Craft::warning("Pointz could not create an account for $email: " . $e->getMessage(), 'pointz');
+
+            return null;
+        } finally {
+            $this->_creatingAccount = false;
+        }
     }
 
     private function _primaryStoreId(): ?int

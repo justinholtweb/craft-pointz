@@ -151,6 +151,7 @@ class Rules extends Component
         $record->birthdayField = $rule->birthdayField ?: null;
         $record->reviewRequiresText = $rule->reviewRequiresText;
         $record->reviewPurchasedOnly = $rule->reviewPurchasedOnly;
+        $record->createAccount = $rule->createAccount;
         $record->couponType = $rule->couponType;
         $record->couponAmount = $rule->couponAmount;
         $record->couponValidDays = $rule->couponValidDays;
@@ -342,6 +343,7 @@ class Rules extends Component
                 'birthdayField',
                 'reviewRequiresText',
                 'reviewPurchasedOnly',
+                'createAccount',
                 'couponType',
                 'couponAmount',
                 'couponValidDays',

@@ -26,6 +26,9 @@ class Transaction extends Model
     /** Points spent by a threshold rule on the reward it pays: a coupon or store credit. */
     public const KIND_REWARD = 'reward';
 
+    /** An opening balance brought over from another system by `pointz/import/balances`. */
+    public const KIND_IMPORT = 'import';
+
     /** Written, but not counted in the balance yet. */
     public const STATUS_PENDING = 'pending';
 
@@ -68,6 +71,7 @@ class Transaction extends Model
             self::KIND_REFUND => Craft::t('pointz', 'Returned'),
             self::KIND_REVOKE => Craft::t('pointz', 'Revoked'),
             self::KIND_REWARD => Craft::t('pointz', 'Exchanged'),
+            self::KIND_IMPORT => Craft::t('pointz', 'Imported'),
         ];
     }
 

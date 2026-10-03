@@ -38,6 +38,7 @@ use justinholtweb\pointz\db\Table;
  * @property string|null $birthdayField
  * @property bool $reviewRequiresText
  * @property bool $reviewPurchasedOnly
+ * @property bool $createAccount
  * @property string $couponType
  * @property float|null $couponAmount
  * @property int|null $couponValidDays

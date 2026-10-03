@@ -86,6 +86,8 @@ $createdUsers = [];
 $createdRules = [];
 $createdOrders = [];
 $createdProducts = [];
+$createdDiscounts = [];
+$tempFiles = [];
 
 function makeUser(string $key): User
 {
@@ -223,6 +225,53 @@ function completeOrder(Order $order): Order
     }
 
     return Order::find()->id($order->id)->status(null)->one();
+}
+
+/**
+ * A discount the way another loyalty system leaves one: a code (or several) and no owner.
+ */
+function makeLegacyDiscount(string $name, array $codes, float $percent, ?DateTime $dateTo = null): craft\commerce\models\Discount
+{
+    global $createdDiscounts, $storeId;
+
+    $discount = new craft\commerce\models\Discount();
+    $discount->storeId = $storeId;
+    $discount->name = $name;
+    $discount->enabled = true;
+    $discount->requireCouponCode = true;
+    $discount->allPurchasables = true;
+    $discount->allCategories = true;
+    $discount->percentDiscount = -($percent / 100);
+    $discount->percentageOffSubject = craft\commerce\records\Discount::TYPE_DISCOUNTED_SALEPRICE;
+    $discount->appliedTo = craft\commerce\records\Discount::APPLIED_TO_ALL_LINE_ITEMS;
+    $discount->dateTo = $dateTo;
+
+    if (!Commerce::getInstance()->getDiscounts()->saveDiscount($discount)) {
+        throw new RuntimeException('Could not save fixture discount: ' . json_encode($discount->getErrors()));
+    }
+
+    $createdDiscounts[] = $discount->id;
+
+    foreach ($codes as $code) {
+        $coupon = new craft\commerce\models\Coupon();
+        $coupon->discountId = $discount->id;
+        $coupon->code = $code;
+        $coupon->maxUses = 0;
+        Commerce::getInstance()->getCoupons()->saveCoupon($coupon);
+    }
+
+    return Commerce::getInstance()->getDiscounts()->getDiscountById($discount->id);
+}
+
+function writeCsv(array $lines): string
+{
+    global $tempFiles;
+
+    $path = tempnam(sys_get_temp_dir(), 'pointz-import-');
+    file_put_contents($path, implode("\n", $lines) . "\n");
+    $tempFiles[] = $path;
+
+    return $path;
 }
 
 function lotRows(int $userId, int $storeId): array
@@ -1348,6 +1397,50 @@ try {
     });
 
     // ---------------------------------------------------------------------------------------
+    check('an email with no account is ignored, unless the rule asks to create one — and then it gets no signup bonus', function() use ($rewards, $rulesService, $couponsService, $accounts, $storeId, $tag) {
+        global $createdUsers;
+
+        $signup = makeRule('guestSignupBonus', ['event' => Rule::EVENT_SIGNUP, 'calculation' => Rule::CALC_FIXED, 'rate' => 100]);
+        $rule = makeRule('guestWelcome', [
+            'event' => Rule::EVENT_CUSTOM,
+            'eventHandle' => 'campaign:verified',
+            'currency' => Rule::CURRENCY_COUPON,
+            'couponAmount' => 10,
+        ]);
+        onlyRules([$signup, $rule]);
+        $email = strtolower($tag) . '-subscriber@pointz.example';
+
+        $ignored = $rewards->awardEvent($email, 'campaign:verified');
+        $noAccount = User::find()->email($email)->status(null)->one() === null;
+
+        $rule->createAccount = true;
+        $rulesService->saveRule($rule);
+        $rulesService->clearMemo();
+
+        $paid = $rewards->awardEvent($email, 'campaign:verified');
+        $user = User::find()->email($email)->status(null)->one();
+
+        if ($user !== null) {
+            $createdUsers[] = $user;
+        }
+
+        $again = $rewards->awardEvent(strtoupper($email), 'campaign:verified');
+        $accounts->clearMemo();
+        $points = $user ? ($accounts->getAccount($user->id, $storeId)?->pointsBalance ?? 0.0) : null;
+        $coupons = $user ? $couponsService->getCoupons(['userId' => $user->id]) : [];
+
+        return $ignored === [] && $noAccount && count($paid) === 1 && $user !== null && $user->getStatus() === User::STATUS_INACTIVE
+            && $again === [] && count($coupons) === 1 && $points == 0.0
+            ?: json_encode(['ignored' => count($ignored), 'noAccount' => $noAccount, 'paid' => count($paid), 'status' => $user?->getStatus(), 'again' => count($again), 'coupons' => count($coupons), 'points' => $points]);
+    });
+
+    check('an email for a handle no account-creating rule answers creates nothing', function() use ($rewards, $tag) {
+        $email = strtolower($tag) . '-stranger@pointz.example';
+        $result = $rewards->awardEvent($email, 'campaign:somethingElse');
+
+        return $result === [] && User::find()->email($email)->status(null)->one() === null ?: 'an account was created';
+    });
+
     section('Coupons');
 
     check('a coupon rule creates its Commerce discount when it is saved', function() use ($commerce) {
@@ -1720,6 +1813,155 @@ try {
             ?: json_encode(['paid' => $paid, 'again' => $again, 'due' => count($dueCoupons), 'later' => count($laterCoupons), 'leap' => $leap]);
     });
 
+
+    section('Import');
+
+    $importer = $plugin->getImport();
+    $importA = makeUser('importA');
+    $importB = makeUser('importB');
+    $importBatch = null;
+    $openingFile = writeCsv([
+        'User,Amount,Currency,Expires,Note',
+        $importA->email . ',100,,' . (new DateTime('+1 year'))->format('Y-m-d') . ',',
+        $importA->id . ',50,,,',
+        strtoupper($importB->email) . ',30,points,,Carried over',
+        'nobody-' . $tag . '@pointz.example,10,,,',
+        $importA->email . ',20,,2020-01-01,',
+        $importA->email . ',-5,,,',
+    ]);
+
+    $runOpening = static function() use ($importer, $openingFile) {
+        return $importer->importBalances($importer->readCsv($openingFile), ['source' => substr(sha1_file($openingFile), 0, 16)]);
+    };
+
+    check('opening balances arrive as lots with their own expiry, and cross no threshold', function() use ($runOpening, $accounts, $couponsService, $importA, $importB, $storeId, &$importBatch) {
+        $rule = makeRule('importThreshold', [
+            'event' => Rule::EVENT_THRESHOLD,
+            'thresholdPoints' => 50,
+            'thresholdSpend' => true,
+            'currency' => Rule::CURRENCY_COUPON,
+            'couponAmount' => 10,
+        ]);
+        onlyRules([$rule]);
+
+        $result = $runOpening();
+        $importBatch = $result['batchId'];
+        $accounts->clearMemo();
+
+        $a = $accounts->getAccount($importA->id, $storeId)?->pointsBalance;
+        $b = $accounts->getAccount($importB->id, $storeId)?->pointsBalance;
+        $dated = array_values(array_filter(lotRows($importA->id, $storeId), static fn($lot) => $lot['dateExpires'] !== null));
+        $kinds = (new Query())->select(['kind'])->distinct()->from(Table::TRANSACTIONS)->where(['userId' => [$importA->id, $importB->id]])->column();
+        $coupons = $couponsService->getCoupons(['userId' => $importA->id]);
+
+        return $result['imported'] === 3 && array_keys($result['failed']) === [5, 7] && array_keys($result['skipped']) === [6]
+            && $a == 150.0 && $b == 30.0 && count($dated) === 1 && (float)$dated[0]['amount'] == 100.0
+            && $kinds === [Transaction::KIND_IMPORT] && $coupons === []
+            ?: json_encode(['result' => $result, 'a' => $a, 'b' => $b, 'dated' => count($dated), 'kinds' => $kinds, 'coupons' => count($coupons)]);
+    });
+
+    check('running the same file again imports nothing', function() use ($runOpening, $accounts, $importA, $storeId) {
+        $result = $runOpening();
+        $accounts->clearMemo();
+        $a = $accounts->getAccount($importA->id, $storeId)?->pointsBalance;
+
+        return $result['imported'] === 0 && count($result['skipped']) === 4 && $a == 150.0
+            ?: json_encode(['imported' => $result['imported'], 'skipped' => $result['skipped'], 'a' => $a]);
+    });
+
+    check('a reverted import takes its balances back, and the file can then be run again', function() use ($runOpening, $importer, $accounts, $importA, $importB, $storeId, &$importBatch) {
+        $reverted = $importer->revert($importBatch);
+        $accounts->clearMemo();
+        $after = [$accounts->getAccount($importA->id, $storeId)?->pointsBalance, $accounts->getAccount($importB->id, $storeId)?->pointsBalance];
+
+        $again = $runOpening();
+        $accounts->clearMemo();
+        $a = $accounts->getAccount($importA->id, $storeId)?->pointsBalance;
+
+        return $reverted['reversed'] === 3 && $after == [0.0, 0.0] && $again['imported'] === 3 && $a == 150.0
+            ?: json_encode(['reverted' => $reverted, 'after' => $after, 'again' => $again['imported'], 'a' => $a]);
+    });
+
+    check('a reference column makes a corrected file safe to run again', function() use ($importer, $accounts, $importB, $storeId, $tag) {
+        $before = $accounts->getAccount($importB->id, $storeId)?->pointsBalance ?? 0.0;
+        $first = writeCsv(['user,amount,reference', $importB->email . ",10,$tag-1"]);
+        $second = writeCsv(['user,amount,reference', $importB->email . ",10,$tag-1", $importB->email . ",5,$tag-2"]);
+
+        $one = $importer->importBalances($importer->readCsv($first), ['source' => substr(sha1_file($first), 0, 16)]);
+        $two = $importer->importBalances($importer->readCsv($second), ['source' => substr(sha1_file($second), 0, 16)]);
+        $accounts->clearMemo();
+        $after = $accounts->getAccount($importB->id, $storeId)?->pointsBalance;
+
+        return $one['imported'] === 1 && $two['imported'] === 1 && count($two['skipped']) === 1 && $after - $before == 15.0
+            ?: json_encode(['one' => $one['imported'], 'two' => $two['imported'], 'gained' => $after - $before]);
+    });
+
+    $legacy = makeLegacyDiscount('Legacy loyalty ' . $tag, ['legacy-' . strtolower($tag)], 10, new DateTime('+20 days'));
+
+    check('an outstanding Commerce coupon is taken over: its owner keeps it and nobody else can use it', function() use ($importer, $couponsService, $legacy, $importA, $couponStranger, $promoVariant, $tag) {
+        $code = 'LEGACY-' . strtoupper($tag);
+        $file = writeCsv(['code,email,issued', "$code,{$importA->email},2024-05-01"]);
+        $result = $importer->importCoupons($importer->readCsv($file), ['remindDays' => 7]);
+
+        $coupon = $couponsService->getCouponByCode($code);
+        $maxUses = (new Query())->select(['maxUses'])->from('{{%commerce_coupons}}')->where(['discountId' => $legacy->id])->scalar();
+
+        $mine = makeCart($importA, $promoVariant, 2);
+        $mine->couponCode = $code;
+        Craft::$app->getElements()->saveElement($mine, false);
+        $theirs = makeCart($couponStranger, $promoVariant, 2);
+        $theirs->couponCode = $code;
+        Craft::$app->getElements()->saveElement($theirs, false);
+
+        $expiresOk = $coupon && abs($coupon->dateExpires->getTimestamp() - $legacy->dateTo->getTimestamp()) < 2;
+        $remindOk = $coupon && abs(($coupon->dateExpires->getTimestamp() - $coupon->dateRemind->getTimestamp()) - 7 * 86400) < 2;
+
+        return $result['imported'] === 1 && $result['madeSingleUse'] === 1 && (int)$maxUses === 1
+            && $coupon->userId === $importA->id && $coupon->ruleId === null && $coupon->type === Rule::COUPON_PERCENT && $coupon->amount == 10.0
+            && $expiresOk && $remindOk && $coupon->dateCreated->format('Y-m-d') === '2024-05-01'
+            && abs($mine->getTotalDiscount() + 5.0) < 0.001 && abs($theirs->getTotalDiscount()) < 0.001
+            ?: json_encode(['result' => $result, 'maxUses' => $maxUses, 'coupon' => $coupon?->toArray(), 'mine' => $mine->getTotalDiscount(), 'theirs' => $theirs->getTotalDiscount()]);
+    });
+
+    check('a discount with codes the file does not list is refused whole', function() use ($importer, $couponsService, $importA, $tag) {
+        makeLegacyDiscount('Shared ' . $tag, ["shared-a-$tag", "shared-b-$tag"], 15);
+        $file = writeCsv(['code,user', "shared-a-$tag,{$importA->id}"]);
+        $result = $importer->importCoupons($importer->readCsv($file));
+
+        return $result['imported'] === 0 && count($result['failed']) === 1 && $couponsService->getCouponByCode("shared-a-$tag") === null
+            ?: json_encode($result);
+    });
+
+    check('reverting a coupon import hands unused codes back to Commerce untouched', function() use ($importer, $couponsService, $importA, $tag) {
+        $discount = makeLegacyDiscount('Revertible ' . $tag, ["revert-$tag"], 5);
+        $file = writeCsv(['code,user', "revert-$tag,{$importA->id}"]);
+        $result = $importer->importCoupons($importer->readCsv($file));
+        $managedBefore = in_array($discount->id, $couponsService->getManagedDiscountIds(), true);
+
+        $reverted = $importer->revert($result['batchId']);
+        $managedAfter = in_array($discount->id, $couponsService->getManagedDiscountIds(), true);
+        $codeLeft = (new Query())->from('{{%commerce_coupons}}')->where(['discountId' => $discount->id])->exists();
+
+        return $result['imported'] === 1 && $managedBefore && !$managedAfter && $reverted['released'] === 1 && $codeLeft
+            && $couponsService->getCouponByCode("revert-$tag") === null
+            ?: json_encode(['result' => $result, 'before' => $managedBefore, 'after' => $managedAfter, 'reverted' => $reverted, 'codeLeft' => $codeLeft]);
+    });
+
+    check('a taken-over code is skipped on a second run, and once it expires the sweep deletes it and its discount', function() use ($importer, $couponsService, $commerce, $legacy, $importA, $tag) {
+        $code = 'LEGACY-' . strtoupper($tag);
+        $again = $importer->importCoupons($importer->readCsv(writeCsv(['code,email', "$code,{$importA->email}"])));
+
+        $coupon = $couponsService->getCouponByCode($code);
+        craft\helpers\Db::update(Table::COUPONS, ['dateExpires' => craft\helpers\Db::prepareDateForDb(new DateTime('-1 hour'))], ['id' => $coupon->id]);
+        $couponsService->expireDue();
+        $couponsService->cleanUpDiscounts();
+
+        $fresh = $couponsService->getCouponById($coupon->id);
+        $discountLeft = $commerce->getDiscounts()->getDiscountById($legacy->id) !== null;
+
+        return $again['imported'] === 0 && count($again['skipped']) === 1 && $fresh->status === 'expired' && !$discountLeft
+            ?: json_encode(['again' => $again, 'status' => $fresh->status, 'discountLeft' => $discountLeft]);
+    });
 } finally {
     $plugin->edition = $originalEdition;
     Plugin::getInstance()->setSettings($originalSettings->toArray());
@@ -1767,7 +2009,11 @@ try {
         }
     }
 
-    foreach ($discountIds as $discountId) {
+    foreach ($tempFiles as $path) {
+        @unlink($path);
+    }
+
+    foreach (array_unique(array_merge($discountIds, $createdDiscounts)) as $discountId) {
         Commerce::getInstance()->getDiscounts()->deleteDiscountById((int)$discountId);
     }
 }

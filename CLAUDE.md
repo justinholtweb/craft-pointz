@@ -108,6 +108,23 @@ rule's value changes, so issued codes keep their value. `cleanUpDiscounts()` del
 orphaned discount once no live code is left on it. `couponDiscountId` is written only by
 `ensureDiscount()`, never by `saveRule()`.
 
+### Imports are lots and adopted codes
+
+`services\Import` loads another system's balances as one `import`-kind credit per row (a lot each,
+with its own expiry), never as replayed history; imported points skip the threshold listener. Its
+coupon half *adopts* existing Commerce codes into `pointz_coupons` with `ruleId` null, which makes
+their discount managed — so `enforceOwnership()` applies and `cleanUpDiscounts()` will delete it.
+That is why a discount with any code the file doesn't list is refused whole. Re-runs dedupe on
+the transaction `reference` (`import:<ref>` or `import:<filehash>:<line>`), ignoring batches that
+have been reverted.
+
+### Accounts for email addresses
+
+A custom-event rule with `createAccount` on lets `awardEvent()` take an email nobody has an
+account for: `Rewards::_createAccountFor()` calls Craft's `ensureUserByEmail()` (an inactive user,
+which Craft's registration later reuses) only if a matching active rule asks. The signup hook
+checks `Rewards::isCreatingAccount()` and stands aside, so a subscriber isn't paid a signup bonus.
+
 ### Install seeds a disabled rule
 
 `Install::seedDefaultRules()` creates one rule per store with `enabled = false`. Installing a
@@ -191,7 +208,7 @@ No local PHP on this Mac. Everything runs inside the plugin-testing container:
 
 ```sh
 docker exec -w /var/www/html ddev-plugin-testing-web \
-  php /var/www/craft-pointz/tests/integration/checks.php          # 93 checks
+  php /var/www/craft-pointz/tests/integration/checks.php          # 103 checks
 docker exec -w /var/www/html ddev-plugin-testing-web \
   php /var/www/craft-pointz/tests/integration/security.php        # 11, a guest vs the signed-in customer over HTTP
 docker exec -w /sites/craft-pointz ddev-phpstan-runner-web \

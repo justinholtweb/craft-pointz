@@ -61,6 +61,14 @@
                 value: rule.eventHandle,
                 errors: rule.getErrors('eventHandle')
             }) }}
+
+            {{ forms.lightswitchField({
+                label: "Pay people without an account"|t('pointz'),
+                instructions: "When the event comes with an email address nobody has an account for — a newsletter signup, say — create an inactive account for it, the way Commerce does for a guest checkout, and pay that. If they register later with the same address, it's the same account and the reward is waiting. Without this, an unknown email is ignored."|t('pointz'),
+                id: 'createAccount',
+                name: 'createAccount',
+                on: rule.createAccount
+            }) }}
         </div>
 
         <div data-events="threshold">
