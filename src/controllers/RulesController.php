@@ -81,7 +81,19 @@ class RulesController extends Controller
             'isNew' => !$rule->id,
             'isPro' => $plugin->isPro(),
             'settings' => $plugin->getSettings(),
-            'eventOptions' => $this->_options(Rule::events()),
+            'eventOptions' => $this->_options($plugin->isPro()
+                ? Rule::events()
+                : array_diff_key(Rule::events(), array_flip(Rule::proEvents()))),
+            'currenciesByEvent' => array_combine(
+                array_keys(Rule::events()),
+                array_map(static fn(string $event) => Rule::currenciesForEvent($event), array_keys(Rule::events()))
+            ),
+            'couponTypeOptions' => $this->_options(Rule::couponTypes()),
+            'birthdayFieldOptions' => $this->_birthdayFieldOptions(),
+            'starsInstalled' => Craft::$app->getPlugins()->isPluginEnabled('stars'),
+            'couponDiscount' => $rule->couponDiscountId
+                ? Commerce::getInstance()->getDiscounts()->getDiscountById($rule->couponDiscountId)
+                : null,
             'scopeOptions' => $this->_options(Rule::scopes()),
             'currencyOptions' => $this->_options(Rule::currencies()),
             'calculationOptions' => $this->_options(Rule::calculations()),
@@ -131,6 +143,18 @@ class RulesController extends Controller
             $rule->setOrderCondition($this->request->getBodyParam('orderCondition'));
             $rule->setUserCondition($this->request->getBodyParam('userCondition'));
             $rule->setPurchasableCondition($this->request->getBodyParam('purchasableCondition'));
+
+            $rule->eventHandle = $this->request->getBodyParam('eventHandle') ?: null;
+            $rule->thresholdPoints = $this->_number($this->request->getBodyParam('thresholdPoints'));
+            $rule->thresholdSpend = (bool)$this->request->getBodyParam('thresholdSpend', $rule->thresholdSpend);
+            $rule->birthdayField = $this->request->getBodyParam('birthdayField') ?: null;
+            $rule->reviewRequiresText = (bool)$this->request->getBodyParam('reviewRequiresText', $rule->reviewRequiresText);
+            $rule->reviewPurchasedOnly = (bool)$this->request->getBodyParam('reviewPurchasedOnly', $rule->reviewPurchasedOnly);
+            $rule->couponType = $this->request->getBodyParam('couponType', $rule->couponType);
+            $rule->couponAmount = $this->_number($this->request->getBodyParam('couponAmount'));
+            $rule->couponValidDays = $this->_int($this->request->getBodyParam('couponValidDays'));
+            $rule->couponRemindDays = $this->_int($this->request->getBodyParam('couponRemindDays'));
+            $rule->couponNotify = (bool)$this->request->getBodyParam('couponNotify', $rule->couponNotify);
         }
 
         if (!$rulesService->saveRule($rule)) {
@@ -194,6 +218,26 @@ class RulesController extends Controller
 
         foreach (Rule::basesForScope($scope) as $value) {
             $options[] = ['value' => $value, 'label' => $labels[$value]];
+        }
+
+        return $options;
+    }
+
+    /**
+     * The user fields a birthday could be kept in: date fields first, then plain text fields that
+     * might hold `1990-03-14`.
+     *
+     * @return array<int, array{value: string, label: string}>
+     */
+    private function _birthdayFieldOptions(): array
+    {
+        $options = [['value' => '', 'label' => Craft::t('pointz', 'Choose a field…')]];
+        $layout = Craft::$app->getFields()->getLayoutByType(\craft\elements\User::class);
+
+        foreach ($layout->getCustomFields() as $field) {
+            if ($field instanceof \craft\fields\Date || $field instanceof \craft\fields\PlainText) {
+                $options[] = ['value' => $field->handle, 'label' => sprintf('%s (%s)', $field->name, $field->handle)];
+            }
         }
 
         return $options;

@@ -127,6 +127,10 @@ class BalancesController extends Controller
             'creditLots' => $plugin->isPro()
                 ? $plugin->getLedger()->getSpendableLots($userId, $store->id, Rule::CURRENCY_CREDIT)
                 : [],
+            'coupons' => $plugin->getCoupons()->getCoupons([
+                'userId' => $userId,
+                'storeId' => $store->id,
+            ], 50),
             'settings' => $plugin->getSettings(),
             'plugin' => $plugin,
             'canAdjust' => Craft::$app->getUser()->checkPermission('pointz-adjustBalances'),
@@ -187,5 +191,28 @@ class BalancesController extends Controller
             'pointsBalance' => $account->pointsBalance,
             'creditBalance' => $account->creditBalance,
         ]);
+    }
+
+    /**
+     * Takes back a live coupon. Points a threshold spent on it are not returned on their own —
+     * grant them back here if they are owed.
+     */
+    public function actionRevokeCoupon(): Response
+    {
+        $this->requirePostRequest();
+        $this->requirePermission('pointz-adjustBalances');
+
+        $coupons = Plugin::getInstance()->getCoupons();
+        $coupon = $coupons->getCouponById((int)$this->request->getRequiredBodyParam('couponId'));
+
+        if ($coupon === null) {
+            throw new NotFoundHttpException('Coupon not found');
+        }
+
+        if (!$coupons->revoke($coupon)) {
+            return $this->asFailure(Craft::t('pointz', 'Only an active coupon can be revoked.'));
+        }
+
+        return $this->asSuccess(Craft::t('pointz', 'Coupon revoked.'));
     }
 }

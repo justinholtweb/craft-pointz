@@ -90,6 +90,16 @@ Completion reads the *adjustments*, not the intent, because the adjustments are 
 is actually being charged. The points count travels in `sourceSnapshot['points']` so a rate change
 between cart and checkout cannot alter what is spent.
 
+### Whose balance a cart spends
+
+**Never the bare `getCustomerId()`.** Commerce makes the owner of an email the customer of a guest
+cart that types it in (`commerce/cart/update-cart` → `ensureUserByEmail()` → `setCustomer()`), so
+the cart's customer is not proof of anything. `Redemption::spenderId()` is the one answer: the
+customer, only if they are the signed-in user, or if they applied the redemption themselves (the
+intent row's `userId`) — which is what a recalculation or completion in a queue job or gateway
+webhook, with nobody signed in, goes on. `quote()`, the adjuster and `commitOrder()` all use it;
+`CartController::actionRedeem` refuses anyone but the signed-in customer. Fixed in 5.0.1.
+
 ### Honest about shortfalls
 
 Clamp mode spends what is there, notes the shortfall on the order and warns to the log. Throw mode
@@ -129,6 +139,10 @@ No local PHP on this Mac. Everything runs inside the plugin-testing container:
 ```sh
 docker exec -w /var/www/html ddev-plugin-testing-web \
   php /var/www/craft-pointz/tests/integration/checks.php          # 70 checks
+docker exec -w /var/www/html ddev-plugin-testing-web \
+  php /var/www/craft-pointz/tests/integration/security.php        # 11, a guest vs the signed-in customer over HTTP
+docker exec -w /sites/craft-pointz ddev-phpstan-runner-web \
+  bash -c 'vendor/bin/phpstan analyse --memory-limit=1G && vendor/bin/ecs check'
 docker exec -w /var/www/html ddev-plugin-testing-web \
   bash -c 'find /var/www/craft-pointz/src -name "*.php" -print0 | xargs -0 -n1 php -l'
 ```

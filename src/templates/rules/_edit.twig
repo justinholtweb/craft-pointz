@@ -42,6 +42,7 @@
 
     {{ forms.selectField({
         label: "Earned for"|t('pointz'),
+        instructions: isPro ? null : "Pro adds rules for approved reviews, birthdays, reaching a points balance and custom events such as a newsletter signup."|t('pointz'),
         id: 'event',
         name: 'event',
         options: eventOptions,
@@ -50,6 +51,75 @@
     }) }}
 
     {% if isPro %}
+        <div data-events="custom">
+            {{ forms.textField({
+                label: "Event handle"|t('pointz'),
+                instructions: "Which event pays out. `formie:newsletter` answers the Formie form with that handle, `dispatch:club` a signup to that Dispatch list, and anything else is yours to fire from a module with `Plugin::getInstance()->getRewards()->awardEvent($user, 'yourHandle')`. End it in `*` to match several, like `formie:*`. Each customer is paid once per rule unless your code passes a reference."|t('pointz'),
+                id: 'eventHandle',
+                name: 'eventHandle',
+                class: 'code',
+                value: rule.eventHandle,
+                errors: rule.getErrors('eventHandle')
+            }) }}
+        </div>
+
+        <div data-events="threshold">
+            {{ forms.textField({
+                type: 'number',
+                step: 'any',
+                label: "Balance"|t('pointz'),
+                instructions: "Fires when the customer's available {points} reach this."|t('pointz', { points: settings.pointsLabelPlural }),
+                id: 'thresholdPoints',
+                name: 'thresholdPoints',
+                value: rule.thresholdPoints,
+                size: 10,
+                errors: rule.getErrors('thresholdPoints')
+            }) }}
+
+            {{ forms.lightswitchField({
+                label: "Spend the points"|t('pointz'),
+                instructions: "On: the balance pays for the reward and starts again, so the rule fires every time it is reached. Off: the balance is left alone and the rule fires once per customer, ever. For tiers, put the higher rule first and switch on “stop after this one”."|t('pointz'),
+                id: 'thresholdSpend',
+                name: 'thresholdSpend',
+                on: rule.thresholdSpend
+            }) }}
+        </div>
+
+        <div data-events="birthday">
+            {{ forms.selectField({
+                label: "Birthday field"|t('pointz'),
+                instructions: "The user field holding the customer's date of birth. Birthdays are paid by `pointz/sweep/run`, so schedule it daily; a missed night is caught up for up to six days."|t('pointz'),
+                id: 'birthdayField',
+                name: 'birthdayField',
+                options: birthdayFieldOptions,
+                value: rule.birthdayField,
+                errors: rule.getErrors('birthdayField')
+            }) }}
+        </div>
+
+        <div data-events="review">
+            {% if not starsInstalled %}
+                <p class="warning with-icon">{{ "Review rules are paid by Stars, which isn't installed. This rule won't fire until it is."|t('pointz') }}</p>
+            {% endif %}
+
+            {{ forms.lightswitchField({
+                label: "Only reviews with written text"|t('pointz'),
+                instructions: "Stars always stores a rating, so this is what separates a review from a click on a star."|t('pointz'),
+                id: 'reviewRequiresText',
+                name: 'reviewRequiresText',
+                on: rule.reviewRequiresText
+            }) }}
+
+            {{ forms.lightswitchField({
+                label: "Only products the customer bought"|t('pointz'),
+                instructions: "The reviewed entry must be a product from one of the customer's completed orders, or related to one in either direction. The reviewer is matched to a customer by email."|t('pointz'),
+                id: 'reviewPurchasedOnly',
+                name: 'reviewPurchasedOnly',
+                on: rule.reviewPurchasedOnly
+            }) }}
+        </div>
+
+        <div data-events="order">
         {{ forms.selectField({
             label: "Applies"|t('pointz'),
             instructions: "A per-line-item rule runs once for every matching product in the order, which is how “double points on outdoor gear” is written."|t('pointz'),
@@ -59,6 +129,7 @@
             value: rule.scope,
             errors: rule.getErrors('scope')
         }) }}
+        </div>
 
         {{ forms.selectField({
             label: "Awards"|t('pointz'),
@@ -68,8 +139,72 @@
             value: rule.currency,
             errors: rule.getErrors('currency')
         }) }}
+
+        <div data-currencies="coupon">
+            {{ forms.selectField({
+                label: "Coupon"|t('pointz'),
+                id: 'couponType',
+                name: 'couponType',
+                options: couponTypeOptions,
+                value: rule.couponType,
+                errors: rule.getErrors('couponType')
+            }) }}
+
+            {{ forms.textField({
+                type: 'number',
+                step: 'any',
+                label: "Coupon value"|t('pointz'),
+                instructions: "A percentage, or an amount in the store's currency. Each coupon is a single-use code on one Commerce discount this rule owns, and only discounts the order of the customer it was issued to."|t('pointz'),
+                id: 'couponAmount',
+                name: 'couponAmount',
+                value: rule.couponAmount,
+                size: 8,
+                errors: rule.getErrors('couponAmount')
+            }) }}
+
+            {{ forms.textField({
+                type: 'number',
+                label: "Coupon valid for"|t('pointz'),
+                instructions: "Empty for a coupon that never expires. Expired codes are deleted from Commerce by `pointz/sweep/run`."|t('pointz'),
+                id: 'couponValidDays',
+                name: 'couponValidDays',
+                value: rule.couponValidDays,
+                size: 6,
+                unit: "days"|t('pointz'),
+                errors: rule.getErrors('couponValidDays')
+            }) }}
+
+            {{ forms.textField({
+                type: 'number',
+                label: "Remind before expiry"|t('pointz'),
+                instructions: "Emails the customer this many days before the coupon expires. Empty for no reminder."|t('pointz'),
+                id: 'couponRemindDays',
+                name: 'couponRemindDays',
+                value: rule.couponRemindDays,
+                size: 6,
+                unit: "days"|t('pointz'),
+                errors: rule.getErrors('couponRemindDays')
+            }) }}
+
+            {{ forms.lightswitchField({
+                label: "Email the coupon"|t('pointz'),
+                instructions: "Sends the code when it is issued. Both emails are edited under Utilities → System Messages."|t('pointz'),
+                id: 'couponNotify',
+                name: 'couponNotify',
+                on: rule.couponNotify
+            }) }}
+
+            {% if couponDiscount %}
+                <p class="light">
+                    {{ "Codes are issued against the discount {link}. Narrow it there if you like — excluded products, a minimum order — but change the value here: a new value starts a new discount, so codes already issued keep theirs."|t('pointz', {
+                        link: tag('a', { href: couponDiscount.cpEditUrl, text: couponDiscount.name })
+                    })|raw }}
+                </p>
+            {% endif %}
+        </div>
     {% endif %}
 
+    <div data-events="order">
     {{ forms.selectField({
         label: "Calculated as"|t('pointz'),
         id: 'calculation',
@@ -91,12 +226,14 @@
             errors: rule.getErrors('basis')
         }) }}
     </div>
+    </div>
 
+    <div data-currencies="points credit">
     {{ forms.textField({
         type: 'number',
         step: 'any',
         label: "Rate"|t('pointz'),
-        instructions: "For a rate: how much is awarded per unit of the figure above. For a fixed award: the whole amount."|t('pointz'),
+        instructions: "For a rate: how much is awarded per unit of the figure above. For a fixed award, and for anything that is not an order: the whole amount."|t('pointz'),
         id: 'rate',
         name: 'rate',
         value: rule.rate,
@@ -112,8 +249,10 @@
         options: roundingOptions,
         value: rule.rounding
     }) }}
+    </div>
 
     {% if isPro %}
+        <div data-currencies="points credit">
         {{ forms.textField({
             type: 'number',
             step: 'any',
@@ -125,10 +264,12 @@
             size: 6,
             errors: rule.getErrors('multiplier')
         }) }}
+        </div>
 
         <hr>
         <h2>{{ "Limits"|t('pointz') }}</h2>
 
+        <div data-events="order">
         {{ forms.textField({
             type: 'number',
             step: 'any',
@@ -152,7 +293,9 @@
             size: 8,
             errors: rule.getErrors('maxAward')
         }) }}
+        </div>
 
+        <div data-currencies="points credit">
         {{ forms.textField({
             type: 'number',
             step: 'any',
@@ -184,7 +327,9 @@
             unit: "days"|t('pointz'),
             errors: rule.getErrors('expireAfterDays')
         }) }}
+        </div>
 
+        <div data-events="order">
         {{ forms.lightswitchField({
             label: "First order only"|t('pointz'),
             instructions: "Only awards on a customer's first completed order in this store."|t('pointz'),
@@ -192,6 +337,7 @@
             name: 'firstOrderOnly',
             on: rule.firstOrderOnly
         }) }}
+        </div>
 
         {{ forms.lightswitchField({
             label: "Stop after this one"|t('pointz'),
@@ -224,17 +370,19 @@
         <h2>{{ "Conditions"|t('pointz') }}</h2>
         <p class="light">{{ "An empty condition matches everything."|t('pointz') }}</p>
 
+        <div data-events="order">
         {{ forms.field({
             label: "Matching orders"|t('pointz'),
             instructions: "Checked against the finished order, so order status, total paid and payment gateway are all fair game here."|t('pointz')
         }, rule.getOrderCondition().getBuilderHtml()) }}
+        </div>
 
         {{ forms.field({
             label: "Matching customers"|t('pointz'),
             instructions: "How a rule is limited to a customer group."|t('pointz')
         }, rule.getUserCondition().getBuilderHtml()) }}
 
-        <div id="condition-purchasable" class="{{ rule.scope == 'lineItem' ? '' : 'hidden' }}">
+        <div id="condition-purchasable" data-events="order" class="{{ rule.scope == 'lineItem' ? '' : 'hidden' }}">
             {{ forms.field({
                 label: "Matching products"|t('pointz'),
                 instructions: "Only used by a per-line-item rule. A purchasable that is not an element cannot be matched by a condition, so a conditional rule skips it."|t('pointz')
@@ -256,6 +404,52 @@
         new Craft.HandleGenerator('#name', '#handle');
     {% endjs %}
 {% endif %}
+
+{% js %}
+// Each trigger has its own settings and its own choice of what it can award. Showing only the
+// ones that apply keeps a review rule from looking like it has an order total to multiply.
+(function() {
+    var event = document.getElementById('event');
+    var currency = document.getElementById('currency');
+    var allowed = {{ currenciesByEvent|json_encode|raw }};
+
+    function apply() {
+        var ev = event ? event.value : 'order';
+        var cur = currency ? currency.value : 'points';
+
+        if (currency && allowed[ev]) {
+            Array.prototype.forEach.call(currency.options, function(option) {
+                var ok = allowed[ev].indexOf(option.value) !== -1;
+                option.hidden = !ok;
+                option.disabled = !ok;
+            });
+
+            if (allowed[ev].indexOf(cur) === -1) {
+                currency.value = allowed[ev][0];
+                cur = currency.value;
+            }
+        }
+
+        document.querySelectorAll('[data-events]').forEach(function(el) {
+            var on = el.getAttribute('data-events').split(' ').indexOf(ev) !== -1;
+            el.classList.toggle('pointz-off', !on);
+        });
+
+        document.querySelectorAll('[data-currencies]').forEach(function(el) {
+            var on = el.getAttribute('data-currencies').split(' ').indexOf(cur) !== -1;
+            el.classList.toggle('pointz-off-currency', !on);
+        });
+    }
+
+    if (event) { event.addEventListener('change', apply); }
+    if (currency) { currency.addEventListener('change', apply); }
+    apply();
+})();
+{% endjs %}
+
+{% css %}
+.pointz-off, .pointz-off-currency { display: none; }
+{% endcss %}
 
 {% js %}
 // The basis options depend on the scope, and offering a combination validation would reject is a

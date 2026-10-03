@@ -99,6 +99,46 @@
         </table>
     {% endif %}
 
+    {% if coupons|length %}
+        <h2>{{ "Coupons"|t('pointz') }}</h2>
+        <table class="data fullwidth collapsible" style="margin-bottom: 24px;">
+            <thead>
+                <tr>
+                    <th scope="col">{{ "Code"|t('pointz') }}</th>
+                    <th scope="col">{{ "Worth"|t('pointz') }}</th>
+                    <th scope="col">{{ "Rule"|t('pointz') }}</th>
+                    <th scope="col">{{ "Issued"|t('pointz') }}</th>
+                    <th scope="col">{{ "Expires"|t('pointz') }}</th>
+                    <th scope="col">{{ "Status"|t('pointz') }}</th>
+                    {% if canAdjust %}<th scope="col" class="thin"></th>{% endif %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for coupon in coupons %}
+                    <tr>
+                        <th scope="row"><code>{{ coupon.code }}</code></th>
+                        <td>{{ coupon.valueLabel }}</td>
+                        <td class="light">{{ coupon.rule.name ?? '—' }}</td>
+                        <td class="light">{{ coupon.dateCreated|datetime('short') }}</td>
+                        <td>{{ coupon.dateExpires ? coupon.dateExpires|date('short') : "Never"|t('pointz') }}</td>
+                        <td>
+                            {{ coupon.statusLabel }}
+                            {% set usedOn = coupon.order %}
+                            {% if usedOn %}<a href="{{ usedOn.cpEditUrl }}">{{ usedOn.reference ?: usedOn.shortNumber }}</a>{% endif %}
+                        </td>
+                        {% if canAdjust %}
+                            <td>
+                                {% if coupon.status == 'active' %}
+                                    <button type="button" class="btn small pointz-revoke" data-id="{{ coupon.id }}">{{ "Revoke"|t('pointz') }}</button>
+                                {% endif %}
+                            </td>
+                        {% endif %}
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% endif %}
+
     <h2>{{ "History"|t('pointz') }}</h2>
 
     {% if transactions|length %}
@@ -160,6 +200,19 @@
                 window.location.reload();
             }).catch(function(error) {
                 Craft.cp.displayError(error.response && error.response.data ? error.response.data.message : error);
+            });
+        });
+
+        document.querySelectorAll('.pointz-revoke').forEach(function(button) {
+            button.addEventListener('click', function() {
+                Craft.sendActionRequest('POST', 'pointz/balances/revoke-coupon', {
+                    data: { couponId: button.getAttribute('data-id') }
+                }).then(function(response) {
+                    Craft.cp.displayNotice(response.data.message);
+                    window.location.reload();
+                }).catch(function(error) {
+                    Craft.cp.displayError(error.response && error.response.data ? error.response.data.message : error);
+                });
             });
         });
 

@@ -1,5 +1,30 @@
 # Release Notes for Pointz
 
+## 5.0.1 - 2026-10-03
+
+### Security
+
+- A guest could spend a registered customer's points and store credit. Commerce makes the owner of
+  an email the customer of a guest cart that types it in, and redemption only looked at the cart's
+  customer — so a guest who knew a customer's email could see their balances in the quote and spend
+  them at checkout. Redemption now needs that customer to be signed in, records who applied it, and
+  only ever spends from the account of the person who asked. A quote shows anyone else zeroes.
+- Points or credit already applied to carts are cleared by the update, because there is no telling
+  who applied them; customers apply them again.
+
+### Fixed
+
+- The Liability dashboard widget's settings were a fatal error on any install with more than one
+  store: they called a `View` method Craft doesn't have.
+- `pointz/accounts/recalculate` printed blank progress lines — a curly ellipsis straight after
+  `$done` made PHP read it as part of the variable's name.
+
+### Added
+
+- `Redemption::spenderId()`, and an optional `$userId` on `setIntent()`.
+- `tests/integration/security.php`: 11 checks, over HTTP as a guest and as the signed-in customer.
+- PHPStan and ECS configuration, with `composer phpstan`, `check-cs` and `fix-cs`.
+
 ## 5.0.0
 
 Initial release.

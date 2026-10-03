@@ -36,6 +36,10 @@ A quote carries `points`, `pointsValue`, `credit`, `maxPoints`, `maxCredit`, `po
 `creditBalance`, `base`, `cap`, `totalDiscount`, `wasClamped` and `notices` — the last of which is
 already written in the customer's language, ready to print.
 
+The balances and maxima are only filled in for the cart's own customer, signed in. Anyone else —
+including a guest who has typed a registered customer's email at checkout — sees zeroes, and can't
+redeem.
+
 ### Earning
 
 ```twig
@@ -64,7 +68,7 @@ craft.pointz.isPro
 
 | Action | Body | Answers |
 | --- | --- | --- |
-| `pointz/cart/redeem` | `points`, `credit` (either may be `max`) | JSON with `success`, `message`, `quote`; or a redirect with a flash |
+| `pointz/cart/redeem` | `points`, `credit` (either may be `max`) | JSON with `success`, `message`, `quote`; or a redirect with a flash. Needs the cart's customer to be signed in. |
 | `pointz/cart/remove` | — | The same |
 | `pointz/cart/quote` | `points`, `credit` as query params | JSON `quote`, applying nothing |
 

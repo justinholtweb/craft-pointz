@@ -44,7 +44,12 @@ class CartController extends Controller
         $cart = Commerce::getInstance()->getCarts()->getCart();
         $settings = Plugin::getInstance()->getSettings();
 
-        if ($cart->getCustomerId() === null) {
+        // Signed in, *as the cart's customer*. A guest who types a registered customer's email
+        // becomes that customer as far as Commerce is concerned; before 5.0.1 that was enough to
+        // spend their balance.
+        $identity = Craft::$app->getUser()->getIdentity();
+
+        if ($cart->getCustomerId() === null || $identity === null || $identity->id !== $cart->getCustomerId()) {
             return $this->_fail(Craft::t('pointz', 'Sign in to spend your {label}.', [
                 'label' => $settings->pointsLabelPlural,
             ]), $cart->id ? Plugin::getInstance()->getRedemption()->quote($cart) : null);
@@ -65,7 +70,8 @@ class CartController extends Controller
         $quote = Plugin::getInstance()->getRedemption()->setIntent(
             $cart,
             $points === null ? null : (float)$points,
-            $credit === null ? null : (float)$credit
+            $credit === null ? null : (float)$credit,
+            $identity->id
         );
 
         Craft::$app->getElements()->saveElement($cart, false);
@@ -116,7 +122,7 @@ class CartController extends Controller
         return $this->asJson(['quote' => $this->_quoteArray($quote)]);
     }
 
-    private function _ok(string $message, ?Quote $quote): ?Response
+    private function _ok(string $message, ?Quote $quote): Response
     {
         if ($this->request->getAcceptsJson()) {
             return $this->asJson([

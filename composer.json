@@ -1,7 +1,7 @@
 {
     "name": "justinholtweb/craft-pointz",
     "description": "Loyalty points and store credit for Craft Commerce — earning rules, a lot-based ledger that expires and reverses correctly, and redemption at checkout.",
-    "version": "5.0.0",
+    "version": "5.0.1",
     "type": "craft-plugin",
     "keywords": [
         "craftcms",
@@ -35,6 +35,16 @@
         "craftcms/cms": "^5.3.0",
         "craftcms/commerce": "^5.0.0"
     },
+    "require-dev": {
+        "craftcms/ecs": "dev-main",
+        "craftcms/phpstan": "dev-main",
+        "phpstan/phpstan": "^1.12 || ^2.2"
+    },
+    "scripts": {
+        "check-cs": "ecs check --ansi",
+        "fix-cs": "ecs check --ansi --fix",
+        "phpstan": "phpstan --memory-limit=1G"
+    },
     "autoload": {
         "psr-4": {
             "justinholtweb\\pointz\\": "src/"
@@ -43,7 +53,8 @@
     "config": {
         "allow-plugins": {
             "craftcms/plugin-installer": true,
-            "yiisoft/yii2-composer": true
+            "yiisoft/yii2-composer": true,
+            "craftcms/generator": true
         }
     },
     "extra": {

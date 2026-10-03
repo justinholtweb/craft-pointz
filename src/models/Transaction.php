@@ -23,6 +23,9 @@ class Transaction extends Model
     public const KIND_REFUND = 'refund';
     public const KIND_REVOKE = 'revoke';
 
+    /** Points spent by a threshold rule on the reward it pays: a coupon or store credit. */
+    public const KIND_REWARD = 'reward';
+
     /** Written, but not counted in the balance yet. */
     public const STATUS_PENDING = 'pending';
 
@@ -64,6 +67,7 @@ class Transaction extends Model
             self::KIND_REVERSE => Craft::t('pointz', 'Reversed'),
             self::KIND_REFUND => Craft::t('pointz', 'Returned'),
             self::KIND_REVOKE => Craft::t('pointz', 'Revoked'),
+            self::KIND_REWARD => Craft::t('pointz', 'Exchanged'),
         ];
     }
 

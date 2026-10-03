@@ -2,7 +2,6 @@
 
 namespace justinholtweb\pointz\controllers;
 
-use Craft;
 use craft\commerce\Plugin as Commerce;
 use craft\db\Query;
 use craft\db\Table as CraftTable;

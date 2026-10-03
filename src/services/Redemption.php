@@ -35,12 +35,12 @@ class Redemption extends Component
     /**
      * Reads the cart's intent.
      *
-     * @return array{points: float, credit: float}
+     * @return array{points: float, credit: float, userId: int|null}
      */
     public function getIntent(int $orderId): array
     {
         $row = (new Query())
-            ->select(['points', 'credit'])
+            ->select(['points', 'credit', 'userId'])
             ->from(Table::CART_REDEMPTIONS)
             ->where(['orderId' => $orderId])
             ->one();
@@ -48,7 +48,35 @@ class Redemption extends Component
         return [
             'points' => (float)($row['points'] ?? 0),
             'credit' => (float)($row['credit'] ?? 0),
+            'userId' => isset($row['userId']) ? (int)$row['userId'] : null,
         ];
+    }
+
+    /**
+     * Whose balance this order may spend, or null if nobody's.
+     *
+     * Not simply the order's customer. Commerce makes whoever owns an email the customer of a
+     * guest cart that types it in, so before 5.0.1 a guest could put a registered customer's email
+     * on their cart and spend that customer's points and credit — and see their balances. The
+     * customer counts only when they are the one signed in, or when they were signed in and asked
+     * for the redemption themselves (which is what a recalculation in a queue job or a gateway
+     * webhook, with nobody signed in, has to go on).
+     */
+    public function spenderId(Order $order): ?int
+    {
+        $customerId = $order->getCustomerId();
+
+        if ($customerId === null) {
+            return null;
+        }
+
+        if ($order->id && $this->getIntent($order->id)['userId'] === $customerId) {
+            return $customerId;
+        }
+
+        $identity = Craft::$app->getRequest()->getIsConsoleRequest() ? null : Craft::$app->getUser()->getIdentity();
+
+        return $identity?->id === $customerId ? $customerId : null;
     }
 
     /**
@@ -58,9 +86,12 @@ class Redemption extends Component
      * small cart and then adds another item should get all 500, not the 200 the small cart could
      * take.
      */
-    public function setIntent(Order $order, ?float $points = null, ?float $credit = null): Quote
+    public function setIntent(Order $order, ?float $points = null, ?float $credit = null, ?int $userId = null): Quote
     {
         $current = $this->getIntent($order->id);
+        // The customer the request is on behalf of — the controller only lets the cart's own,
+        // signed-in customer through. Nobody's intent spends anything (see spenderId()).
+        $userId ??= Craft::$app->getRequest()->getIsConsoleRequest() ? null : Craft::$app->getUser()->getIdentity()?->id;
         $points = $points === null ? $current['points'] : max(0, $points);
         $credit = $credit === null ? $current['credit'] : max(0, $credit);
 
@@ -68,16 +99,19 @@ class Redemption extends Component
 
         Craft::$app->getDb()->createCommand()->upsert(Table::CART_REDEMPTIONS, [
             'orderId' => $order->id,
+            'userId' => $userId,
             'points' => $points,
             'credit' => $credit,
             'dateCreated' => $now,
             'dateUpdated' => $now,
             'uid' => StringHelper::UUID(),
-        ], [
+        ], array_filter([
+            // Without a user, the owner already recorded stands.
+            'userId' => $userId,
             'points' => $points,
             'credit' => $credit,
             'dateUpdated' => $now,
-        ])->execute();
+        ], static fn($value, $key) => $key !== 'userId' || $value !== null, ARRAY_FILTER_USE_BOTH))->execute();
 
         $order->recalculate();
 
@@ -100,16 +134,18 @@ class Redemption extends Component
         $plugin = Plugin::getInstance();
         $quote = new Quote();
 
-        $intent = $order->id ? $this->getIntent($order->id) : ['points' => 0, 'credit' => 0];
+        $intent = $order->id ? $this->getIntent($order->id) : ['points' => 0, 'credit' => 0, 'userId' => null];
         $quote->requestedPoints = $points ?? $intent['points'];
         $quote->requestedCredit = $credit ?? $intent['credit'];
 
         $storeId = $order->getStore()->id;
-        $userId = $order->getCustomerId();
+        // Balances and everything spendable come from the spender, never the bare customer: a
+        // quote is public (the anonymous quote action, the Twig variable) and so is a cart's email.
+        $userId = $this->spenderId($order);
         $account = $userId ? $plugin->getAccounts()->getAccount($userId, $storeId) : null;
 
-        $quote->pointsBalance = $account?->pointsBalance ?? 0;
-        $quote->creditBalance = $account?->creditBalance ?? 0;
+        $quote->pointsBalance = $account->pointsBalance ?? 0;
+        $quote->creditBalance = $account->creditBalance ?? 0;
 
         $quote->base = $this->redeemableBase($order);
         $quote->cap = $settings->maxRedemptionPercent === null
@@ -224,13 +260,34 @@ class Redemption extends Component
      */
     public function commitOrder(Order $order): array
     {
-        $userId = $order->getCustomerId();
+        $settings = Plugin::getInstance()->getSettings();
+        $userId = $this->spenderId($order);
 
         if ($userId === null) {
+            // The adjuster only discounts for a spender, so redemption adjustments here mean the
+            // customer changed after they were made. Spending someone else's balance is never the
+            // answer; the order is treated like a shortfall instead.
+            if ($order->getCustomerId() !== null && $this->_hasRedemptionAdjustments($order)) {
+                $message = 'Pointz did not debit order ' . $order->id . ': its redemption was not made by its customer.';
+
+                if ($settings->onShortfall === Settings::SHORTFALL_THROW) {
+                    throw new PointzException($message);
+                }
+
+                $order->addNotice(Craft::createObject([
+                    'class' => OrderNotice::class,
+                    'attributes' => [
+                        'type' => 'pointzShortfall',
+                        'attribute' => 'total',
+                        'message' => Craft::t('pointz', 'The balance did not cover the whole redemption on this order.'),
+                    ],
+                ]));
+                Craft::warning($message, 'pointz');
+            }
+
             return [];
         }
 
-        $settings = Plugin::getInstance()->getSettings();
         $ledger = Plugin::getInstance()->getLedger();
         $storeId = $order->getStore()->id;
         $written = [];
@@ -377,6 +434,17 @@ class Redemption extends Component
     /**
      * Rounds a points figure down to the store's block size, so "redeem in hundreds" means it.
      */
+    private function _hasRedemptionAdjustments(Order $order): bool
+    {
+        foreach ($order->getAdjustments() as $adjustment) {
+            if (in_array($adjustment->type, RedemptionAdjuster::adjustmentTypes(), true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function _blocks(float $points, Settings $settings): float
     {
         $block = $settings->redeemBlockSize;

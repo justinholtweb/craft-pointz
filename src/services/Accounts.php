@@ -13,7 +13,6 @@ use justinholtweb\pointz\db\Table;
 use justinholtweb\pointz\models\Account;
 use justinholtweb\pointz\models\Lot;
 use justinholtweb\pointz\models\Rule;
-use justinholtweb\pointz\Plugin;
 
 /**
  * Balances.
@@ -267,7 +266,7 @@ class Accounts extends Component
             ->from(Table::LOTS)
             ->where(['userId' => $userId, 'storeId' => $storeId, 'currency' => $currency])
             ->andWhere(['not', ['status' => Lot::STATUS_REVOKED]])
-            ->sum('[[amount]]') ?? 0;
+            ->sum('[[amount]]');
     }
 
     private function _query(): Query

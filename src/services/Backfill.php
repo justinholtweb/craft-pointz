@@ -8,7 +8,6 @@ use craft\commerce\elements\Order;
 use craft\helpers\StringHelper;
 use DateTime;
 use justinholtweb\pointz\errors\PointzException;
-use justinholtweb\pointz\models\Award;
 use justinholtweb\pointz\Plugin;
 
 /**

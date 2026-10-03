@@ -5,6 +5,7 @@ namespace justinholtweb\pointz\widgets;
 use Craft;
 use craft\base\Widget;
 use craft\commerce\Plugin as Commerce;
+use craft\helpers\Cp;
 use justinholtweb\pointz\Plugin;
 
 /**
@@ -83,16 +84,18 @@ class LiabilityWidget extends Widget
         $options = [];
 
         foreach ($stores as $store) {
-            $options[] = ['value' => $store->id, 'label' => $store->name];
+            $options[] = ['value' => $store->id, 'label' => $store->getName()];
         }
 
-        return Craft::$app->getView()->renderTemplateMacro('_includes/forms.twig', 'selectField', [[
+        // View has no renderTemplateMacro(); calling it made these settings a fatal error on any
+        // install with more than one store.
+        return Cp::selectFieldHtml([
             'label' => Craft::t('pointz', 'Store'),
             'id' => 'storeId',
             'name' => 'storeId',
             'options' => $options,
             'value' => $this->storeId,
-        ]]);
+        ]);
     }
 
     protected function defineRules(): array

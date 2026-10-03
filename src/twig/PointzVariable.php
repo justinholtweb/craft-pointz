@@ -8,6 +8,7 @@ use craft\commerce\Plugin as Commerce;
 use craft\elements\User;
 use justinholtweb\pointz\models\Account;
 use justinholtweb\pointz\models\Award;
+use justinholtweb\pointz\models\Coupon;
 use justinholtweb\pointz\models\Quote;
 use justinholtweb\pointz\models\Rule;
 use justinholtweb\pointz\models\Settings;
@@ -32,7 +33,7 @@ class PointzVariable
     {
         $account = $this->account($user, $storeId);
 
-        return $account?->pointsBalance ?? 0.0;
+        return $account->pointsBalance ?? 0.0;
     }
 
     /**
@@ -42,7 +43,7 @@ class PointzVariable
     {
         $account = $this->account($user, $storeId);
 
-        return $account?->creditBalance ?? 0.0;
+        return $account->creditBalance ?? 0.0;
     }
 
     /**
@@ -52,7 +53,7 @@ class PointzVariable
     {
         $account = $this->account($user, $storeId);
 
-        return $account?->pendingPoints ?? 0.0;
+        return $account->pendingPoints ?? 0.0;
     }
 
     public function account(User|int|null $user = null, ?int $storeId = null): ?Account
@@ -109,7 +110,7 @@ class PointzVariable
      */
     public function maxRedeemable(?Order $cart = null): float
     {
-        return $this->quote($cart)?->maxPoints ?? 0.0;
+        return $this->quote($cart)->maxPoints ?? 0.0;
     }
 
     /**
@@ -209,6 +210,43 @@ class PointzVariable
     }
 
     /**
+     * The customer's coupons, newest first. By default only the ones they can still use, which is
+     * what an account page lists; pass `null` for all of them, used and expired included.
+     *
+     * ```twig
+     * {% for coupon in craft.pointz.coupons() %}
+     *     {{ coupon.code }} — {{ coupon.valueLabel }}, until {{ coupon.dateExpires|date }}
+     * {% endfor %}
+     * ```
+     *
+     * @return Coupon[]
+     */
+    public function coupons(?string $status = Coupon::STATUS_ACTIVE, User|int|null $user = null, ?int $storeId = null): array
+    {
+        $userId = $this->_userId($user);
+        $storeId ??= $this->_storeId();
+
+        if ($userId === null || $storeId === null) {
+            return [];
+        }
+
+        $criteria = ['userId' => $userId, 'storeId' => $storeId];
+
+        if ($status !== null) {
+            $criteria['status'] = $status;
+        }
+
+        $coupons = Plugin::getInstance()->getCoupons()->getCoupons($criteria, null);
+
+        // A code past its date that the sweep has not reached yet is not one to offer.
+        if ($status === Coupon::STATUS_ACTIVE) {
+            $coupons = array_values(array_filter($coupons, static fn(Coupon $coupon) => $coupon->getIsUsable()));
+        }
+
+        return $coupons;
+    }
+
+    /**
      * The current cart, without creating one. A visitor who has not started shopping should not
      * get a cart just because a template asked about their points.
      */
@@ -237,7 +275,7 @@ class PointzVariable
      *
      * @return Rule[]
      */
-    public function activeRules(?int $storeId = null): array
+    public function activeRules(?int $storeId = null, string $event = Rule::EVENT_ORDER): array
     {
         $storeId ??= $this->_storeId();
 
@@ -245,7 +283,7 @@ class PointzVariable
             return [];
         }
 
-        return Plugin::getInstance()->getRules()->getActiveRules($storeId, Rule::EVENT_ORDER);
+        return Plugin::getInstance()->getRules()->getActiveRules($storeId, $event);
     }
 
     private function _userId(User|int|null $user): ?int
@@ -269,6 +307,6 @@ class PointzVariable
 
         $stores = Commerce::getInstance()->getStores();
 
-        return ($stores->getCurrentStore() ?? $stores->getPrimaryStore())?->id;
+        return $stores->getCurrentStore()->id;
     }
 }

@@ -49,12 +49,23 @@
                         </th>
                         <td data-title="{{ 'Earned for'|t('pointz') }}">
                             {{ rule.events()[rule.event] ?? rule.event }}
-                            {% if rule.scope == 'lineItem' %}
+                            {% if rule.event == 'order' and rule.scope == 'lineItem' %}
                                 <span class="light">({{ "per line item"|t('pointz') }})</span>
+                            {% elseif rule.event == 'custom' and rule.eventHandle %}
+                                <span class="light code">{{ rule.eventHandle }}</span>
+                            {% elseif rule.event == 'threshold' and rule.thresholdPoints %}
+                                <span class="light">({{ rule.thresholdPoints|number }} {{ settings.pointsLabelPlural }}{{ rule.thresholdSpend ? ', spent'|t('pointz') : '' }})</span>
+                            {% elseif rule.event == 'birthday' and rule.birthdayField %}
+                                <span class="light code">{{ rule.birthdayField }}</span>
                             {% endif %}
                         </td>
                         <td data-title="{{ 'Awards'|t('pointz') }}">
-                            {% if rule.calculation == 'fixed' %}
+                            {% if rule.currency == 'coupon' %}
+                                {{ "A {value} coupon"|t('pointz', { value: rule.couponLabel }) }}
+                                {% if rule.couponValidDays %}
+                                    <span class="light">({{ "valid {n} days"|t('pointz', { n: rule.couponValidDays }) }})</span>
+                                {% endif %}
+                            {% elseif rule.calculation == 'fixed' or rule.event != 'order' %}
                                 <strong>{{ rule.rate * rule.multiplier }}</strong>
                                 {{ rule.currency == 'credit' ? settings.creditLabel : settings.pointsLabelPlural }}
                             {% else %}

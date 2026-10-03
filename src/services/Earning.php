@@ -6,7 +6,6 @@ use Craft;
 use craft\base\Component;
 use craft\commerce\elements\Order;
 use craft\commerce\helpers\Currency;
-use craft\commerce\models\LineItem;
 use craft\commerce\Plugin as Commerce;
 use craft\elements\User;
 use DateTime;
@@ -15,6 +14,7 @@ use justinholtweb\pointz\adjusters\Redemption;
 use justinholtweb\pointz\events\AwardEvent;
 use justinholtweb\pointz\models\Award;
 use justinholtweb\pointz\models\AwardLine;
+use justinholtweb\pointz\models\Coupon;
 use justinholtweb\pointz\models\Rule;
 use justinholtweb\pointz\models\Transaction;
 use justinholtweb\pointz\Plugin;
@@ -168,14 +168,13 @@ class Earning extends Component
     }
 
     /**
-     * The signup bonus, if a rule offers one. Returns null when nothing applied — including when
-     * the customer has already had it, which the ledger's own history answers.
+     * The signup bonus, if a rule offers one: points, credit or a coupon. Returns null when nothing
+     * applied — including when the customer has already had it, which the rule's own history
+     * answers, so re-saving a user or reactivating an account cannot pay twice.
      */
-    public function awardSignup(User $user, ?int $storeId = null): ?Transaction
+    public function awardSignup(User $user, ?int $storeId = null): Transaction|Coupon|null
     {
-        $settings = Plugin::getInstance()->getSettings();
-
-        if (!$settings->earningEnabled || !Plugin::commerceIsReady()) {
+        if (!Plugin::commerceIsReady()) {
             return null;
         }
 
@@ -185,41 +184,24 @@ class Earning extends Component
             return null;
         }
 
-        $rules = Plugin::getInstance()->getRules()->getActiveRules($storeId, Rule::EVENT_SIGNUP);
-        $ledger = Plugin::getInstance()->getLedger();
-        $lifecycle = Plugin::getInstance()->getLifecycle();
+        $results = Plugin::getInstance()->getRewards()->awardForEvent(Rule::EVENT_SIGNUP, $user, $storeId, null, [], true);
 
-        foreach ($rules as $rule) {
-            if (!$rule->matchesUser($user)) {
-                continue;
-            }
+        return $results[0] ?? null;
+    }
 
-            // One signup bonus per rule per customer, forever — the rule's own ledger history is
-            // the guard, so re-saving a user or reactivating an account cannot pay twice.
-            $already = $ledger->getTransactionsQuery([
-                'userId' => $user->id,
-                'ruleId' => $rule->id,
-            ])->exists();
+    /**
+     * What a rule with no order to measure pays: its rate times its multiplier, rounded the way
+     * the rule says for points or to the currency for credit.
+     */
+    public function fixedAward(Rule $rule, ?int $storeId): float
+    {
+        $raw = $rule->rate * $rule->multiplier;
 
-            if ($already) {
-                continue;
-            }
-
-            $amount = $this->_round($rule, $rule->rate * $rule->multiplier);
-
-            if ($amount <= 0) {
-                continue;
-            }
-
-            return $ledger->credit($user->id, $storeId, $rule->currency, $amount, [
-                'kind' => Transaction::KIND_EARN,
-                'ruleId' => $rule->id,
-                'dateExpires' => $lifecycle->expiryDateFor($rule->expireAfterDays),
-                'note' => Craft::t('pointz', 'Welcome bonus: {rule}', ['rule' => $rule->name]),
-            ]);
+        if ($rule->currency === Rule::CURRENCY_CREDIT) {
+            return max(0, $this->_roundMoney($raw, $storeId));
         }
 
-        return null;
+        return max(0, $this->_round($rule, $raw));
     }
 
     /**
@@ -542,13 +524,6 @@ class Earning extends Component
         return !$query->exists();
     }
 
-    /**
-     * @param LineItem $lineItem
-     */
-    private function _lineItemLabel(LineItem $lineItem): string
-    {
-        return $lineItem->getDescription() ?: (string)$lineItem->id;
-    }
 
     /**
      * Now, in the site's time zone. Kept in one place so the checks can reason about windows.

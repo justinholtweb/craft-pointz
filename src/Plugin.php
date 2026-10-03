@@ -3,37 +3,48 @@
 namespace justinholtweb\pointz;
 
 use Craft;
+use craft\base\Element;
 use craft\base\Model;
 use craft\base\Plugin as BasePlugin;
 use craft\commerce\elements\Order;
+use craft\commerce\events\MatchOrderEvent;
 use craft\commerce\records\Transaction as TransactionRecord;
+use craft\commerce\services\Discounts;
 use craft\commerce\services\OrderAdjustments;
 use craft\commerce\services\OrderHistories;
 use craft\commerce\services\Transactions as CommerceTransactions;
 use craft\elements\User;
-use craft\events\DefineHtmlEvent;
 use craft\events\ModelEvent;
 use craft\events\RegisterComponentTypesEvent;
+use craft\events\RegisterEmailMessagesEvent;
 use craft\events\RegisterUrlRulesEvent;
 use craft\events\RegisterUserPermissionsEvent;
 use craft\helpers\UrlHelper;
 use craft\services\Dashboard;
+use craft\services\SystemMessages;
 use craft\services\UserPermissions;
 use craft\web\twig\variables\CraftVariable;
 use craft\web\UrlManager;
 use justinholtweb\pointz\adjusters\Redemption as RedemptionAdjuster;
+use justinholtweb\pointz\events\TransactionEvent;
+use justinholtweb\pointz\models\Rule;
 use justinholtweb\pointz\models\Settings;
+use justinholtweb\pointz\models\Transaction;
 use justinholtweb\pointz\services\Accounts;
 use justinholtweb\pointz\services\Backfill;
+use justinholtweb\pointz\services\Coupons;
 use justinholtweb\pointz\services\Earning;
 use justinholtweb\pointz\services\Grants;
 use justinholtweb\pointz\services\Ledger;
 use justinholtweb\pointz\services\Lifecycle;
 use justinholtweb\pointz\services\Redemption;
+use justinholtweb\pointz\services\Rewards;
 use justinholtweb\pointz\services\Rules;
 use justinholtweb\pointz\twig\PointzVariable;
 use justinholtweb\pointz\widgets\LiabilityWidget;
 use yii\base\Event;
+use yii\db\AfterSaveEvent;
+use yii\db\BaseActiveRecord;
 
 /**
  * Pointz — loyalty points and store credit for Craft Commerce.
@@ -46,6 +57,8 @@ use yii\base\Event;
  * @property-read Lifecycle $lifecycle
  * @property-read Grants $grants
  * @property-read Backfill $backfill
+ * @property-read Coupons $coupons
+ * @property-read Rewards $rewards
  * @method Settings getSettings()
  */
 class Plugin extends BasePlugin
@@ -55,7 +68,7 @@ class Plugin extends BasePlugin
     public const EDITION_LITE = 'lite';
     public const EDITION_PRO = 'pro';
 
-    public string $schemaVersion = '5.0.0';
+    public string $schemaVersion = '5.1.0';
     public bool $hasCpSettings = true;
     public bool $hasCpSection = true;
 
@@ -85,6 +98,8 @@ class Plugin extends BasePlugin
                 'lifecycle' => ['class' => Lifecycle::class],
                 'grants' => ['class' => Grants::class],
                 'backfill' => ['class' => Backfill::class],
+                'coupons' => ['class' => Coupons::class],
+                'rewards' => ['class' => Rewards::class],
             ],
         ];
     }
@@ -100,6 +115,7 @@ class Plugin extends BasePlugin
         $this->_registerPermissions();
         $this->_registerRoutes();
         $this->_registerWidgets();
+        $this->_registerSystemMessages();
 
         // Pointz can be installed while Commerce is disabled or mid-upgrade, and everything below
         // reaches for classes that would not be there.
@@ -111,6 +127,7 @@ class Plugin extends BasePlugin
         $this->_registerOrderEvents();
         $this->_registerRefundReversal();
         $this->_registerSignupBonus();
+        $this->_registerRewardTriggers();
         $this->_registerOrderPanel();
     }
 
@@ -171,6 +188,16 @@ class Plugin extends BasePlugin
     public function getBackfill(): Backfill
     {
         return $this->get('backfill');
+    }
+
+    public function getCoupons(): Coupons
+    {
+        return $this->get('coupons');
+    }
+
+    public function getRewards(): Rewards
+    {
+        return $this->get('rewards');
     }
 
     /**
@@ -369,6 +396,12 @@ class Plugin extends BasePlugin
                     // A loyalty scheme is never worth a failed checkout.
                     Craft::error('Pointz could not award order ' . $order->id . ': ' . $e->getMessage(), 'pointz');
                 }
+
+                try {
+                    $plugin->getCoupons()->markUsed($order);
+                } catch (\Throwable $e) {
+                    Craft::error('Pointz could not mark the coupon on order ' . $order->id . ' used: ' . $e->getMessage(), 'pointz');
+                }
             }
         );
 
@@ -492,6 +525,147 @@ class Plugin extends BasePlugin
                     Plugin::getInstance()->getEarning()->awardSignup($user);
                 } catch (\Throwable $e) {
                     Craft::error('Pointz could not award the signup bonus: ' . $e->getMessage(), 'pointz');
+                }
+            }
+        );
+    }
+
+    /**
+     * The two coupon emails, editable under Utilities → System Messages like Craft's own.
+     */
+    private function _registerSystemMessages(): void
+    {
+        Event::on(
+            SystemMessages::class,
+            SystemMessages::EVENT_REGISTER_MESSAGES,
+            static function(RegisterEmailMessagesEvent $event) {
+                foreach (Coupons::systemMessages() as $message) {
+                    $event->messages[] = $message;
+                }
+            }
+        );
+    }
+
+    /**
+     * The triggers that are not an order. Each handler is wrapped: a review approval, a form
+     * submission or a newsletter signup must never fail because a reward could not be paid.
+     *
+     * Stars, Formie and Dispatch are hooked by class name, so none of them has to be installed —
+     * an event on a class that never loads simply never fires.
+     */
+    private function _registerRewardTriggers(): void
+    {
+        // A balance that has just grown may have crossed a threshold. After the commit, because a
+        // threshold spends — and the ledger cannot be re-entered from inside its own lock.
+        Event::on(
+            Ledger::class,
+            Ledger::EVENT_AFTER_COMMIT,
+            static function(TransactionEvent $event) {
+                $transaction = $event->transaction;
+
+                if ($transaction->currency !== Rule::CURRENCY_POINTS || $transaction->status !== Transaction::STATUS_POSTED) {
+                    return;
+                }
+
+                try {
+                    Plugin::getInstance()->getRewards()->evaluateThresholds($transaction->userId, $transaction->storeId);
+                } catch (\Throwable $e) {
+                    Craft::error('Pointz could not evaluate thresholds for user ' . $transaction->userId . ': ' . $e->getMessage(), 'pointz');
+                }
+            }
+        );
+
+        // A Pointz coupon code only discounts its owner's order, and only until it expires.
+        Event::on(
+            Discounts::class,
+            Discounts::EVENT_DISCOUNT_MATCHES_ORDER,
+            static function(MatchOrderEvent $event) {
+                Plugin::getInstance()->getCoupons()->enforceOwnership($event);
+            }
+        );
+
+        Event::on(
+            'justinholtweb\stars\elements\Review',
+            Element::EVENT_AFTER_SAVE,
+            static function(ModelEvent $event) {
+                if (!Craft::$app->getPlugins()->isPluginEnabled('stars')) {
+                    return;
+                }
+
+                try {
+                    Plugin::getInstance()->getRewards()->awardReview($event->sender);
+                } catch (\Throwable $e) {
+                    Craft::error('Pointz could not reward review ' . ($event->sender->id ?? '?') . ': ' . $e->getMessage(), 'pointz');
+                }
+            }
+        );
+
+        Event::on(
+            'verbb\formie\services\Submissions',
+            'afterSubmission',
+            static function($event) {
+                $submission = $event->submission ?? null;
+                $form = $event->form ?? $submission?->getForm();
+
+                if (!$submission || !$form || !($event->success ?? false) || $submission->isIncomplete || $submission->isSpam) {
+                    return;
+                }
+
+                try {
+                    $user = $submission->getUser();
+
+                    if ($user === null) {
+                        foreach ($submission->getFieldValuesForField('verbb\formie\fields\Email') as $email) {
+                            if (is_string($email) && $email !== '') {
+                                $user = Plugin::getInstance()->getRewards()->resolveUser($email);
+                                break;
+                            }
+                        }
+                    }
+
+                    if ($user !== null) {
+                        Plugin::getInstance()->getRewards()->awardEvent($user, 'formie:' . $form->handle, null, null, [
+                            'submission' => $submission,
+                        ]);
+                    }
+                } catch (\Throwable $e) {
+                    Craft::error('Pointz could not reward Formie submission ' . $submission->id . ': ' . $e->getMessage(), 'pointz');
+                }
+            }
+        );
+
+        // Dispatch has no "subscribed" event, so the subscription record's insert is the signal.
+        // Only a visitor subscribing counts: a CSV import or a control-panel edit going through
+        // the same method must not pay a welcome reward to an entire list.
+        Event::on(
+            'justinholtweb\dispatch\records\SubscriptionRecord',
+            BaseActiveRecord::EVENT_AFTER_INSERT,
+            static function(AfterSaveEvent $event) {
+                $request = Craft::$app->getRequest();
+
+                if ($request->getIsConsoleRequest() || !$request->getIsSiteRequest()
+                    || (($request->getActionSegments()[0] ?? null) === 'queue')) {
+                    return;
+                }
+
+                $record = $event->sender;
+
+                try {
+                    $subscriber = \justinholtweb\dispatch\elements\Subscriber::find()->id($record->subscriberId)->status(null)->one();
+                    $list = \justinholtweb\dispatch\elements\MailingList::find()->id($record->mailingListId)->status(null)->one();
+
+                    if (!$subscriber || !$list) {
+                        return;
+                    }
+
+                    $user = $subscriber->userId ?: $subscriber->email;
+
+                    Plugin::getInstance()->getRewards()->awardEvent($user, 'dispatch:' . $list->handle, null, null, [
+                        'subscriber' => $subscriber,
+                        'list' => $list,
+                    ]);
+                } catch (\Throwable $e) {
+                    Craft::error('Pointz could not reward a Dispatch subscription: ' . $e->getMessage(), 'pointz');
                 }
             }
         );

@@ -27,12 +27,25 @@ class Rule extends Model
 {
     public const EVENT_ORDER = 'order';
     public const EVENT_SIGNUP = 'signup';
+    public const EVENT_REVIEW = 'review';
+    public const EVENT_BIRTHDAY = 'birthday';
+    public const EVENT_THRESHOLD = 'threshold';
+    public const EVENT_CUSTOM = 'custom';
 
     public const SCOPE_ORDER = 'order';
     public const SCOPE_LINE_ITEM = 'lineItem';
 
     public const CURRENCY_POINTS = 'points';
     public const CURRENCY_CREDIT = 'credit';
+
+    /**
+     * Not a currency in the ledger's sense — a coupon never becomes a balance. It sits here
+     * because "what does this rule hand out" is one question with three answers.
+     */
+    public const CURRENCY_COUPON = 'coupon';
+
+    public const COUPON_PERCENT = 'percent';
+    public const COUPON_FIXED = 'fixed';
 
     public const CALC_RATIO = 'ratio';
     public const CALC_FIXED = 'fixed';
@@ -77,6 +90,34 @@ class Rule extends Model
     public ?int $expireAfterDays = null;
     public ?DateTime $dateFrom = null;
     public ?DateTime $dateTo = null;
+
+    /** A custom event rule fires for this handle — see `Rewards::awardEvent()`. */
+    public ?string $eventHandle = null;
+
+    /** A threshold rule fires when the available points balance reaches this. */
+    public ?float $thresholdPoints = null;
+
+    /** Whether a threshold rule spends the points it was triggered by. Off fires once, ever. */
+    public bool $thresholdSpend = true;
+
+    /** The handle of the user field a birthday rule reads. */
+    public ?string $birthdayField = null;
+
+    /** Whether a review needs written text to count. Stars always stores a rating. */
+    public bool $reviewRequiresText = true;
+
+    /** Whether the reviewed entry has to be, or be related to, something the customer bought. */
+    public bool $reviewPurchasedOnly = false;
+
+    public string $couponType = self::COUPON_PERCENT;
+    public ?float $couponAmount = null;
+    public ?int $couponValidDays = null;
+    public ?int $couponRemindDays = null;
+    public bool $couponNotify = false;
+
+    /** The Commerce discount this rule's codes are issued against. Pointz creates and owns it. */
+    public ?int $couponDiscountId = null;
+
     public ?DateTime $dateCreated = null;
     public ?DateTime $dateUpdated = null;
     public ?string $uid = null;
@@ -119,6 +160,47 @@ class Rule extends Model
         return [
             self::EVENT_ORDER => Craft::t('pointz', 'A completed order'),
             self::EVENT_SIGNUP => Craft::t('pointz', 'A new customer account'),
+            self::EVENT_REVIEW => Craft::t('pointz', 'An approved review (Stars)'),
+            self::EVENT_BIRTHDAY => Craft::t('pointz', 'A customer’s birthday'),
+            self::EVENT_THRESHOLD => Craft::t('pointz', 'Reaching a points balance'),
+            self::EVENT_CUSTOM => Craft::t('pointz', 'A custom event'),
+        ];
+    }
+
+    /**
+     * The triggers that are not an order or a signup. All of them are Pro.
+     *
+     * @return string[]
+     */
+    public static function proEvents(): array
+    {
+        return [self::EVENT_REVIEW, self::EVENT_BIRTHDAY, self::EVENT_THRESHOLD, self::EVENT_CUSTOM];
+    }
+
+    /**
+     * What each trigger may hand out. An order earns into the ledger only: a coupon per order is
+     * a discount rule, and Commerce already has those. A threshold *spends* points, so paying out
+     * more points for it would be a loop.
+     *
+     * @return string[]
+     */
+    public static function currenciesForEvent(string $event): array
+    {
+        return match ($event) {
+            self::EVENT_ORDER => [self::CURRENCY_POINTS, self::CURRENCY_CREDIT],
+            self::EVENT_THRESHOLD => [self::CURRENCY_COUPON, self::CURRENCY_CREDIT],
+            default => [self::CURRENCY_POINTS, self::CURRENCY_CREDIT, self::CURRENCY_COUPON],
+        };
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public static function couponTypes(): array
+    {
+        return [
+            self::COUPON_PERCENT => Craft::t('pointz', 'A percentage off the order'),
+            self::COUPON_FIXED => Craft::t('pointz', 'A fixed amount off the order'),
         ];
     }
 
@@ -141,6 +223,7 @@ class Rule extends Model
         return [
             self::CURRENCY_POINTS => Craft::t('pointz', 'Points'),
             self::CURRENCY_CREDIT => Craft::t('pointz', 'Store credit'),
+            self::CURRENCY_COUPON => Craft::t('pointz', 'A coupon'),
         ];
     }
 
@@ -236,18 +319,27 @@ class Rule extends Model
             [['rate'], 'number'],
             [['multiplier'], 'number', 'min' => 0],
             [['minAward', 'maxAward', 'maxPerUser'], 'number', 'min' => 0],
-            [['expireAfterDays'], 'integer', 'min' => 1],
-            [['enabled', 'firstOrderOnly', 'stopProcessing'], 'boolean'],
+            [['expireAfterDays', 'couponValidDays', 'couponRemindDays'], 'integer', 'min' => 1],
+            [['enabled', 'firstOrderOnly', 'stopProcessing', 'thresholdSpend', 'reviewRequiresText', 'reviewPurchasedOnly', 'couponNotify'], 'boolean'],
             [['dateTo'], 'validateWindow'],
             [['maxAward'], 'validateAwardRange'],
-            [['sortOrder', 'id', 'uid', 'dateFrom', 'dateCreated', 'dateUpdated'], 'safe'],
+            [['currency'], 'validateCurrency'],
+            [['event'], 'validateEdition'],
+            [['eventHandle'], 'match', 'pattern' => '/^[a-zA-Z0-9_\-.:*]+$/'],
+            [['eventHandle', 'birthdayField'], 'string', 'max' => 255],
+            [['thresholdPoints', 'couponAmount'], 'number', 'min' => 0.00001],
+            [['couponType'], 'in', 'range' => array_keys(self::couponTypes())],
+            [['eventHandle', 'thresholdPoints', 'birthdayField'], 'validateTrigger', 'skipOnEmpty' => false],
+            [['couponAmount', 'couponRemindDays'], 'validateCoupon', 'skipOnEmpty' => false],
+            [['sortOrder', 'id', 'uid', 'dateFrom', 'dateCreated', 'dateUpdated', 'couponDiscountId'], 'safe'],
         ];
     }
 
     public function validateBasis(string $attribute): void
     {
-        // A fixed award ignores the basis entirely, so there is nothing to be wrong about.
-        if ($this->calculation === self::CALC_FIXED) {
+        // A fixed award ignores the basis entirely, so there is nothing to be wrong about — and
+        // nothing but an order has a basis to apply a rate to.
+        if ($this->calculation === self::CALC_FIXED || $this->event !== self::EVENT_ORDER) {
             return;
         }
 
@@ -263,6 +355,77 @@ class Rule extends Model
     {
         if ($this->dateFrom && $this->dateTo && $this->dateTo < $this->dateFrom) {
             $this->addError($attribute, Craft::t('pointz', 'The end of the window must come after its start.'));
+        }
+    }
+
+    public function validateCurrency(string $attribute): void
+    {
+        if (!in_array($this->currency, self::currenciesForEvent($this->event), true)) {
+            $this->addError($attribute, Craft::t('pointz', 'This trigger can’t award that.'));
+        }
+    }
+
+    /**
+     * Lite keeps the order and signup triggers and points. Everything this release added is Pro,
+     * and is refused at save rather than saved and then quietly never run.
+     */
+    public function validateEdition(string $attribute): void
+    {
+        if (Plugin::getInstance()->isPro()) {
+            return;
+        }
+
+        if (in_array($this->event, self::proEvents(), true) || $this->currency === self::CURRENCY_COUPON) {
+            $this->addError($attribute, Craft::t('pointz', 'This needs Pointz Pro.'));
+        }
+    }
+
+    /**
+     * Each trigger's own setting is required only for that trigger.
+     */
+    public function validateTrigger(string $attribute): void
+    {
+        $needs = match ($this->event) {
+            self::EVENT_CUSTOM => 'eventHandle',
+            self::EVENT_THRESHOLD => 'thresholdPoints',
+            self::EVENT_BIRTHDAY => 'birthdayField',
+            default => null,
+        };
+
+        if ($needs === $attribute && ($this->$attribute === null || $this->$attribute === '')) {
+            $this->addError($attribute, Craft::t('pointz', '{attribute} cannot be blank.', [
+                'attribute' => $this->getAttributeLabel($attribute),
+            ]));
+        }
+
+        if ($attribute === 'birthdayField' && $needs === $attribute && $this->birthdayField
+            && Craft::$app->getFields()->getFieldByHandle($this->birthdayField) === null) {
+            $this->addError($attribute, Craft::t('pointz', 'No field has that handle.'));
+        }
+    }
+
+    public function validateCoupon(string $attribute): void
+    {
+        if (!$this->awardsCoupon()) {
+            return;
+        }
+
+        if ($attribute === 'couponAmount') {
+            if ($this->couponAmount === null) {
+                $this->addError($attribute, Craft::t('pointz', '{attribute} cannot be blank.', [
+                    'attribute' => $this->getAttributeLabel($attribute),
+                ]));
+            } elseif ($this->couponType === self::COUPON_PERCENT && $this->couponAmount > 100) {
+                $this->addError($attribute, Craft::t('pointz', 'A percentage can’t be more than 100.'));
+            }
+        }
+
+        if ($attribute === 'couponRemindDays' && $this->couponRemindDays !== null) {
+            if ($this->couponValidDays === null) {
+                $this->addError($attribute, Craft::t('pointz', 'A coupon that never expires has nothing to be reminded about.'));
+            } elseif ($this->couponRemindDays >= $this->couponValidDays) {
+                $this->addError($attribute, Craft::t('pointz', 'The reminder has to come before the coupon expires.'));
+            }
         }
     }
 
@@ -296,6 +459,17 @@ class Rule extends Model
             'expireAfterDays' => Craft::t('pointz', 'Expires after'),
             'dateFrom' => Craft::t('pointz', 'Starts'),
             'dateTo' => Craft::t('pointz', 'Ends'),
+            'eventHandle' => Craft::t('pointz', 'Event handle'),
+            'thresholdPoints' => Craft::t('pointz', 'Balance'),
+            'thresholdSpend' => Craft::t('pointz', 'Spend the points'),
+            'birthdayField' => Craft::t('pointz', 'Birthday field'),
+            'reviewRequiresText' => Craft::t('pointz', 'Only reviews with written text'),
+            'reviewPurchasedOnly' => Craft::t('pointz', 'Only products the customer bought'),
+            'couponType' => Craft::t('pointz', 'Coupon'),
+            'couponAmount' => Craft::t('pointz', 'Coupon value'),
+            'couponValidDays' => Craft::t('pointz', 'Coupon valid for'),
+            'couponRemindDays' => Craft::t('pointz', 'Remind before expiry'),
+            'couponNotify' => Craft::t('pointz', 'Email the coupon'),
         ];
     }
 
@@ -378,6 +552,19 @@ class Rule extends Model
         $this->_purchasableCondition = $condition;
     }
 
+    public function awardsCoupon(): bool
+    {
+        return $this->currency === self::CURRENCY_COUPON;
+    }
+
+    /**
+     * What one of this rule's coupons is worth, for the CP and for emails: "10%" or "€5.00".
+     */
+    public function getCouponLabel(): string
+    {
+        return Coupon::formatValue($this->couponType, (float)$this->couponAmount, $this->storeId);
+    }
+
     /**
      * Whether the rule is inside its campaign window right now.
      */
@@ -456,6 +643,7 @@ class Rule extends Model
             'order' => $this->getOrderCondition(),
             'user' => $this->getUserCondition(),
             'purchasable' => $this->getPurchasableCondition(),
+            default => throw new \InvalidArgumentException("Unknown condition: $which"),
         };
 
         if (!$condition->getConditionRules()) {

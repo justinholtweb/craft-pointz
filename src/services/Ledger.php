@@ -35,10 +35,19 @@ class Ledger extends Component
     public const EVENT_AFTER_TRANSACTION = 'afterTransaction';
 
     /**
+     * @event TransactionEvent Raised after a positive movement, once the account's lock is released
+     *                         and the database transaction committed. `EVENT_AFTER_TRANSACTION`
+     *                         fires inside the lock, so a handler there cannot move value itself;
+     *                         one here can — which is how a threshold rule spends what just
+     *                         arrived.
+     */
+    public const EVENT_AFTER_COMMIT = 'afterCommit';
+
+    /**
      * Adds value.
      *
      * @param array{kind?: string, orderId?: int|null, ruleId?: int|null, authorId?: int|null,
-     *              note?: string|null, reference?: string|null, batchId?: string|null,
+     *              reversesId?: int|null, note?: string|null, reference?: string|null, batchId?: string|null,
      *              pending?: bool, dateAvailable?: DateTime|null, dateExpires?: DateTime|null} $config
      */
     public function credit(int $userId, int $storeId, string $currency, float $amount, array $config = []): Transaction
@@ -47,7 +56,7 @@ class Ledger extends Component
             throw new PointzException('A credit must be a positive amount.');
         }
 
-        return $this->_locked($userId, $storeId, function() use ($userId, $storeId, $currency, $amount, $config) {
+        $transaction = $this->_locked($userId, $storeId, function() use ($userId, $storeId, $currency, $amount, $config) {
             $pending = (bool)($config['pending'] ?? false);
 
             $transaction = $this->_writeTransaction([
@@ -82,12 +91,16 @@ class Ledger extends Component
 
             return $this->_settle($transaction);
         });
+
+        $this->_afterCommit($transaction);
+
+        return $transaction;
     }
 
     /**
      * Spends value, consuming lots soonest-expiry-first.
      *
-     * @param array{kind?: string, orderId?: int|null, authorId?: int|null, note?: string|null,
+     * @param array{kind?: string, orderId?: int|null, ruleId?: int|null, authorId?: int|null, note?: string|null,
      *              reference?: string|null, batchId?: string|null, allowPartial?: bool} $config
      * @throws PointzException if the balance is short and `allowPartial` is not set.
      */
@@ -173,7 +186,7 @@ class Ledger extends Component
             return null;
         }
 
-        return $this->_locked($spend->userId, $spend->storeId, function() use ($spend, $uses, $wanted, $config) {
+        $restored = $this->_locked($spend->userId, $spend->storeId, function() use ($spend, $uses, $wanted, $config) {
             $transaction = $this->_writeTransaction([
                 'storeId' => $spend->storeId,
                 'userId' => $spend->userId,
@@ -234,6 +247,10 @@ class Ledger extends Component
 
             return $this->_settle($transaction);
         });
+
+        $this->_afterCommit($restored);
+
+        return $restored;
     }
 
     /**
@@ -461,6 +478,27 @@ class Ledger extends Component
         }
 
         return $result;
+    }
+
+    /**
+     * Announces a positive movement once nothing is locked any more.
+     */
+    private function _afterCommit(Transaction $transaction): void
+    {
+        if ($transaction->amount <= 0 || !$this->hasEventHandlers(self::EVENT_AFTER_COMMIT)) {
+            return;
+        }
+
+        $account = Plugin::getInstance()->getAccounts()->getAccount($transaction->userId, $transaction->storeId);
+
+        if ($account === null) {
+            return;
+        }
+
+        $this->trigger(self::EVENT_AFTER_COMMIT, new TransactionEvent([
+            'transaction' => $transaction,
+            'account' => $account,
+        ]));
     }
 
     private function _writeTransaction(array $values): Transaction

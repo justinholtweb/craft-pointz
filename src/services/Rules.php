@@ -62,12 +62,18 @@ class Rules extends Component
      */
     public function getActiveRules(int $storeId, string $event, ?DateTime $when = null): array
     {
+        $isPro = Plugin::getInstance()->isPro();
+
         $rules = array_values(array_filter(
             $this->getAllRules($storeId),
-            static fn(Rule $rule) => $rule->enabled && $rule->event === $event && $rule->isInWindow($when)
+            static fn(Rule $rule) => $rule->enabled
+                && $rule->event === $event
+                && $rule->isInWindow($when)
+                // A downgraded install keeps its Pro rules but stops running them.
+                && ($isPro || (!in_array($rule->event, Rule::proEvents(), true) && !$rule->awardsCoupon()))
         ));
 
-        if (!Plugin::getInstance()->isPro() && count($rules) > 1) {
+        if (!$isPro && count($rules) > 1) {
             $rules = [$rules[0]];
         }
 
@@ -139,12 +145,31 @@ class Rules extends Component
         $record->orderCondition = $rule->getConditionJson('order');
         $record->userCondition = $rule->getConditionJson('user');
         $record->purchasableCondition = $rule->getConditionJson('purchasable');
+        $record->eventHandle = $rule->eventHandle ?: null;
+        $record->thresholdPoints = $rule->thresholdPoints;
+        $record->thresholdSpend = $rule->thresholdSpend;
+        $record->birthdayField = $rule->birthdayField ?: null;
+        $record->reviewRequiresText = $rule->reviewRequiresText;
+        $record->reviewPurchasedOnly = $rule->reviewPurchasedOnly;
+        $record->couponType = $rule->couponType;
+        $record->couponAmount = $rule->couponAmount;
+        $record->couponValidDays = $rule->couponValidDays;
+        $record->couponRemindDays = $rule->couponRemindDays;
+        $record->couponNotify = $rule->couponNotify;
+        $record->couponDiscountId = $rule->couponDiscountId;
 
         $record->save(false);
 
         $rule->id = $record->id;
         $rule->uid = $record->uid;
         $rule->sortOrder = $record->sortOrder;
+
+        // A coupon rule's discount exists from the moment the rule does, so the merchant can find
+        // it in Commerce and narrow it — excluded products, a minimum order — before anything is
+        // issued. A value change replaces it; codes already issued keep theirs.
+        if ($rule->awardsCoupon()) {
+            Plugin::getInstance()->getCoupons()->ensureDiscount($rule);
+        }
 
         $this->_rulesByStore = null;
 
@@ -159,10 +184,18 @@ class Rules extends Component
             return false;
         }
 
+        $discountId = $record->couponDiscountId ? (int)$record->couponDiscountId : null;
+
         // Transactions keep a `ruleId` with ON DELETE SET NULL, so the ledger survives the rule
         // that wrote it. A note nobody can trace back is still better than a hole in the history.
         $record->delete();
         $this->_rulesByStore = null;
+
+        // Its discount goes too, unless customers still hold live codes on it — those keep working
+        // until they are used or expire, and the sweep removes the discount after the last one.
+        if ($discountId && Plugin::commerceIsReady()) {
+            Plugin::getInstance()->getCoupons()->deleteDiscountIfIdle($discountId);
+        }
 
         return true;
     }
@@ -236,7 +269,7 @@ class Rules extends Component
 
         $store = Commerce::getInstance()->getStores()->getStoreById($storeId);
 
-        return $store?->handle ?? 'primary';
+        return $store->handle ?? 'primary';
     }
 
     public function getStoreIdByHandle(?string $handle): ?int
@@ -251,7 +284,7 @@ class Rules extends Component
             return $stores->getPrimaryStore()?->id;
         }
 
-        return $stores->getStoreByHandle($handle)?->id ?? $stores->getPrimaryStore()?->id;
+        return $stores->getStoreByHandle($handle)->id ?? $stores->getPrimaryStore()?->id;
     }
 
     /**
@@ -302,6 +335,18 @@ class Rules extends Component
                 'orderCondition',
                 'userCondition',
                 'purchasableCondition',
+                'eventHandle',
+                'thresholdPoints',
+                'thresholdSpend',
+                'birthdayField',
+                'reviewRequiresText',
+                'reviewPurchasedOnly',
+                'couponType',
+                'couponAmount',
+                'couponValidDays',
+                'couponRemindDays',
+                'couponNotify',
+                'couponDiscountId',
                 'dateCreated',
                 'dateUpdated',
                 'uid',

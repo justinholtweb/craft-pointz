@@ -207,6 +207,10 @@ function makeCart(User $user, Variant $variant, int $qty = 1): Order
         throw new RuntimeException('Could not save cart line items: ' . json_encode($order->getErrors()));
     }
 
+    // What the signed-in customer's first visit to the redeem action records: that the cart's
+    // redemptions are theirs. Without it nobody may spend on the cart (see Redemption::spenderId()).
+    Plugin::getInstance()->getRedemption()->setIntent($order, 0, 0, $user->id);
+
     return $order;
 }
 

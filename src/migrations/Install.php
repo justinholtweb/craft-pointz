@@ -15,6 +15,8 @@ class Install extends Migration
 {
     private const COMMERCE_STORES = '{{%commerce_stores}}';
     private const COMMERCE_ORDERS = '{{%commerce_orders}}';
+    public const COMMERCE_DISCOUNTS = '{{%commerce_discounts}}';
+    public const COMMERCE_COUPONS = '{{%commerce_coupons}}';
 
     /**
      * @inheritdoc
@@ -24,6 +26,7 @@ class Install extends Migration
         $this->createTables();
         $this->createIndexes();
         $this->addForeignKeys();
+        self::createCouponsTable($this);
         $this->seedDefaultRules();
 
         return true;
@@ -35,6 +38,7 @@ class Install extends Migration
     public function safeDown(): bool
     {
         // Children first: uses point at lots, lots at transactions, transactions at rules.
+        $this->dropTableIfExists(Table::COUPONS);
         $this->dropTableIfExists(Table::LOT_USES);
         $this->dropTableIfExists(Table::LOTS);
         $this->dropTableIfExists(Table::TRANSACTIONS);
@@ -151,6 +155,24 @@ class Install extends Migration
             'orderCondition' => $this->text(),
             'userCondition' => $this->text(),
             'purchasableCondition' => $this->text(),
+            // A custom event's handle — `formie:newsletter`, `dispatch:club`, or the site's own.
+            'eventHandle' => $this->string(),
+            // A threshold rule fires when the points balance reaches this, and by default spends it.
+            'thresholdPoints' => $this->decimal(19, 5),
+            'thresholdSpend' => $this->boolean()->notNull()->defaultValue(true),
+            // The handle of the user field a birthday rule reads.
+            'birthdayField' => $this->string(),
+            'reviewRequiresText' => $this->boolean()->notNull()->defaultValue(true),
+            'reviewPurchasedOnly' => $this->boolean()->notNull()->defaultValue(false),
+            // What a coupon rule hands out. The Commerce discount is created by the rule and
+            // replaced, never edited, when the amount changes — so a code already issued keeps
+            // the value it was issued with.
+            'couponType' => $this->string(8)->notNull()->defaultValue('percent'),
+            'couponAmount' => $this->decimal(19, 5),
+            'couponValidDays' => $this->integer(),
+            'couponRemindDays' => $this->integer(),
+            'couponNotify' => $this->boolean()->notNull()->defaultValue(false),
+            'couponDiscountId' => $this->integer(),
             'dateCreated' => $this->dateTime()->notNull(),
             'dateUpdated' => $this->dateTime()->notNull(),
             'uid' => $this->uid(),
@@ -161,6 +183,8 @@ class Install extends Migration
         $this->createTable(Table::CART_REDEMPTIONS, [
             'id' => $this->primaryKey(),
             'orderId' => $this->integer()->notNull(),
+            // Who asked. Only their own balance may be spent on the cart — see Redemption::spenderId().
+            'userId' => $this->integer()->null(),
             'points' => $this->decimal(19, 5)->notNull()->defaultValue(0),
             'credit' => $this->decimal(19, 5)->notNull()->defaultValue(0),
             'dateCreated' => $this->dateTime()->notNull(),
@@ -221,8 +245,58 @@ class Install extends Migration
         $this->addForeignKey(null, Table::LOT_USES, ['transactionId'], Table::TRANSACTIONS, ['id'], 'CASCADE', null);
 
         $this->addForeignKey(null, Table::RULES, ['storeId'], self::COMMERCE_STORES, ['id'], 'CASCADE', null);
+        $this->addForeignKey(null, Table::RULES, ['couponDiscountId'], self::COMMERCE_DISCOUNTS, ['id'], 'SET NULL', null);
 
         $this->addForeignKey(null, Table::CART_REDEMPTIONS, ['orderId'], self::COMMERCE_ORDERS, ['id'], 'CASCADE', null);
+        $this->addForeignKey(null, Table::CART_REDEMPTIONS, ['userId'], CraftTable::USERS, ['id'], 'CASCADE', null);
+    }
+
+    /**
+     * Every coupon Pointz has issued. Shared by the install and the 5.1 migration.
+     *
+     * The code is copied here rather than read through `couponId`, because Commerce's coupon row
+     * is deleted when a code expires and the customer's history should still say what they had.
+     * `type` and `amount` are what the code was worth when it was issued, for the same reason.
+     */
+    public static function createCouponsTable(Migration $migration): void
+    {
+        $migration->createTable(Table::COUPONS, [
+            'id' => $migration->primaryKey(),
+            'storeId' => $migration->integer()->notNull(),
+            'userId' => $migration->integer()->notNull(),
+            'ruleId' => $migration->integer(),
+            'discountId' => $migration->integer(),
+            'couponId' => $migration->integer(),
+            'transactionId' => $migration->integer(),
+            'orderId' => $migration->integer(),
+            'code' => $migration->string()->notNull(),
+            'type' => $migration->string(8)->notNull()->defaultValue('percent'),
+            'amount' => $migration->decimal(19, 5)->notNull()->defaultValue(0),
+            'status' => $migration->string(16)->notNull()->defaultValue('active'),
+            'reference' => $migration->string(),
+            'dateExpires' => $migration->dateTime(),
+            'dateRemind' => $migration->dateTime(),
+            'dateReminded' => $migration->dateTime(),
+            'dateUsed' => $migration->dateTime(),
+            'dateCreated' => $migration->dateTime()->notNull(),
+            'dateUpdated' => $migration->dateTime()->notNull(),
+            'uid' => $migration->uid(),
+        ]);
+
+        $migration->createIndex(null, Table::COUPONS, ['code'], true);
+        $migration->createIndex(null, Table::COUPONS, ['storeId', 'userId', 'status'], false);
+        $migration->createIndex(null, Table::COUPONS, ['status', 'dateExpires'], false);
+        $migration->createIndex(null, Table::COUPONS, ['status', 'dateRemind'], false);
+        $migration->createIndex(null, Table::COUPONS, ['ruleId', 'userId'], false);
+        $migration->createIndex(null, Table::COUPONS, ['discountId'], false);
+
+        $migration->addForeignKey(null, Table::COUPONS, ['storeId'], self::COMMERCE_STORES, ['id'], 'CASCADE', null);
+        $migration->addForeignKey(null, Table::COUPONS, ['userId'], CraftTable::USERS, ['id'], 'CASCADE', null);
+        $migration->addForeignKey(null, Table::COUPONS, ['ruleId'], Table::RULES, ['id'], 'SET NULL', null);
+        $migration->addForeignKey(null, Table::COUPONS, ['discountId'], self::COMMERCE_DISCOUNTS, ['id'], 'SET NULL', null);
+        $migration->addForeignKey(null, Table::COUPONS, ['couponId'], self::COMMERCE_COUPONS, ['id'], 'SET NULL', null);
+        $migration->addForeignKey(null, Table::COUPONS, ['transactionId'], Table::TRANSACTIONS, ['id'], 'SET NULL', null);
+        $migration->addForeignKey(null, Table::COUPONS, ['orderId'], self::COMMERCE_ORDERS, ['id'], 'SET NULL', null);
     }
 
     /**

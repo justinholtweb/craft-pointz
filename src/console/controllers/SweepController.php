@@ -8,7 +8,8 @@ use justinholtweb\pointz\Plugin;
 use yii\console\ExitCode;
 
 /**
- * The scheduled half of Pointz: holds clearing, value expiring, idle balances closing.
+ * The scheduled half of Pointz: holds clearing, value expiring, idle balances closing, birthdays
+ * paying out and coupons expiring.
  *
  * Nothing expires because a date passed — it expires because this ran. Schedule
  * `pointz/sweep/run` daily and the plugin keeps itself honest; do not, and balances simply never
@@ -27,17 +28,54 @@ class SweepController extends Controller
     }
 
     /**
-     * Runs every sweep in the order they have to happen: release first, expire second.
+     * Runs every sweep in the order they have to happen: release first, expire second, then the
+     * day's birthdays and the coupon housekeeping.
      */
     public function actionRun(): int
     {
-        $promoted = Plugin::getInstance()->getLifecycle()->promoteDueLots($this->limit);
-        $expired = Plugin::getInstance()->getLifecycle()->expireDueLots($this->limit);
-        $idle = Plugin::getInstance()->getLifecycle()->expireInactiveAccounts($this->limit);
+        $plugin = Plugin::getInstance();
+        $promoted = $plugin->getLifecycle()->promoteDueLots($this->limit);
+        $expired = $plugin->getLifecycle()->expireDueLots($this->limit);
+        $idle = $plugin->getLifecycle()->expireInactiveAccounts($this->limit);
+        $birthdays = $plugin->getRewards()->runBirthdays();
+        $couponsExpired = $plugin->getCoupons()->expireDue($this->limit);
+        $reminded = $plugin->getCoupons()->remindDue($this->limit);
+        $discounts = $plugin->getCoupons()->cleanUpDiscounts();
 
         $this->stdout("Released: $promoted\n", Console::FG_GREEN);
         $this->stdout("Expired: $expired\n", Console::FG_GREEN);
         $this->stdout("Idle balances closed: $idle\n", Console::FG_GREEN);
+        $this->stdout("Birthday rewards: $birthdays\n", Console::FG_GREEN);
+        $this->stdout("Coupons expired: $couponsExpired\n", Console::FG_GREEN);
+        $this->stdout("Coupon reminders: $reminded\n", Console::FG_GREEN);
+        $this->stdout("Spent discounts removed: $discounts\n", Console::FG_GREEN);
+
+        return ExitCode::OK;
+    }
+
+    /**
+     * Pays today's birthday rewards. Safe to run more than once a day. Pro.
+     */
+    public function actionBirthdays(): int
+    {
+        $count = Plugin::getInstance()->getRewards()->runBirthdays();
+        $this->stdout("Paid $count birthday reward(s).\n", Console::FG_GREEN);
+
+        return ExitCode::OK;
+    }
+
+    /**
+     * Expires coupons past their date, sends the reminders that are due, and removes discounts
+     * nothing issues against any more.
+     */
+    public function actionCoupons(): int
+    {
+        $coupons = Plugin::getInstance()->getCoupons();
+        $expired = $coupons->expireDue($this->limit);
+        $reminded = $coupons->remindDue($this->limit);
+        $discounts = $coupons->cleanUpDiscounts();
+
+        $this->stdout("Expired $expired coupon(s), sent $reminded reminder(s), removed $discounts discount(s).\n", Console::FG_GREEN);
 
         return ExitCode::OK;
     }

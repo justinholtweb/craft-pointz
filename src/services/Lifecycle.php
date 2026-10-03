@@ -341,7 +341,17 @@ class Lifecycle extends Component
             $accounts->refresh($userId, $storeId);
         }
 
-        return is_int($released) ? $released : count($rows);
+        // Released points are new spendable points, just as an earn is — and a hold is precisely
+        // the case where a balance crosses a threshold without a transaction being written.
+        foreach ($touched as [$userId, $storeId]) {
+            try {
+                Plugin::getInstance()->getRewards()->evaluateThresholds($userId, $storeId);
+            } catch (\Throwable $e) {
+                Craft::error("Pointz could not evaluate thresholds for user $userId: " . $e->getMessage(), 'pointz');
+            }
+        }
+
+        return $released;
     }
 
     /**

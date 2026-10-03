@@ -22,7 +22,7 @@ class AccountsController extends Controller
     {
         $count = Plugin::getInstance()->getAccounts()->recalculateAll(function(int $done) {
             if ($done % 100 === 0) {
-                $this->stdout("  $done…\n");
+                $this->stdout("  {$done}…\n");
             }
         });
 

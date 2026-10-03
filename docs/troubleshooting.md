@@ -27,7 +27,11 @@ or the plumbing is.
 
 ## The discount will not apply
 
-- **The customer is not signed in.** A guest cart has no balance to spend.
+- **The customer is not signed in — as the cart's customer.** A guest cart has no balance to spend,
+  even one with a registered customer's email on it: Commerce makes that customer the cart's owner,
+  but only the customer, signed in, can spend their points or credit.
+- **You have just upgraded to 5.0.1.** Points or credit applied to a cart before the upgrade were
+  cleared, because Pointz couldn't tell who had applied them. The customer applies them again.
 - **The order is too small.** Points are capped by the order and by **Maximum share of an order**;
   `craft.pointz.quote().notices` says which one bit.
 - **A block size or a minimum is rounding the request to zero.** Both are in Settings → Redeeming.
