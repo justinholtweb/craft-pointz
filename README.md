@@ -50,7 +50,7 @@ start paying out on a live store before anyone has read the numbers.
 | Balances, ledger and manual grants | ✅ | ✅ |
 | Holds, and refund reversal | ✅ | ✅ |
 | One site-wide expiry policy | ✅ | ✅ |
-| Order panel, Twig API, console | ✅ | ✅ |
+| Order panel, Twig API, GraphQL, console | ✅ | ✅ |
 | Several rules per store, stacked or exclusive | | ✅ |
 | Per-line-item rules with product conditions | | ✅ |
 | Order and customer conditions | | ✅ |
@@ -140,6 +140,7 @@ the same window.
 - [Configuration](docs/configuration.md)
 - [Usage](docs/usage.md)
 - [Twig and events](docs/twig.md)
+- [GraphQL](docs/graphql.md)
 - [FAQ](docs/faq.md)
 - [Troubleshooting](docs/troubleshooting.md)
 

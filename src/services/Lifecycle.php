@@ -263,9 +263,12 @@ class Lifecycle extends Component
      * Lots that will expire inside the warning window, grouped by account — what an expiry notice
      * is built from.
      *
+     * Pass a user and store to read one account's figures in SQL rather than filtering the first
+     * `$limit` accounts afterwards, which can miss the one that was asked about.
+     *
      * @return array<int, array{userId: int, storeId: int, currency: string, amount: float, dateExpires: string}>
      */
-    public function getExpiringSoon(?int $days = null, int $limit = 500): array
+    public function getExpiringSoon(?int $days = null, int $limit = 500, ?int $userId = null, ?int $storeId = null): array
     {
         $settings = Plugin::getInstance()->getSettings();
         $days ??= $settings->expiryWarningDays;
@@ -289,9 +292,47 @@ class Lifecycle extends Component
             ->andWhere(['>', 'remaining', 0])
             ->andWhere(['not', ['dateExpires' => null]])
             ->andWhere(['between', 'dateExpires', Db::prepareDateForDb($this->now()), Db::prepareDateForDb($until)])
+            ->andFilterWhere(['userId' => $userId, 'storeId' => $storeId])
             ->groupBy(['userId', 'storeId', 'currency'])
             ->limit($limit)
             ->all();
+    }
+
+    /**
+     * One customer's lots that expire inside the window, soonest first — each with its own date,
+     * which is what "120 points expire on 4 March, 80 on 9 April" is built from.
+     *
+     * The window defaults to the warning setting, or 30 days when that is blank. Empty when expiry
+     * is off.
+     *
+     * @return Lot[]
+     */
+    public function getExpiringLots(int $userId, int $storeId, ?int $days = null): array
+    {
+        $settings = Plugin::getInstance()->getSettings();
+        $days ??= $settings->expiryWarningDays ?? 30;
+
+        if (!$settings->expiryEnabled) {
+            return [];
+        }
+
+        $now = $this->now();
+        $until = (clone $now)->add(new DateInterval('P' . max(0, $days) . 'D'));
+        $ledger = Plugin::getInstance()->getLedger();
+        $lots = [];
+
+        // The spendable lots, already in spending order: soonest expiry first.
+        foreach ([Rule::CURRENCY_POINTS, Rule::CURRENCY_CREDIT] as $currency) {
+            foreach ($ledger->getSpendableLots($userId, $storeId, $currency) as $lot) {
+                if ($lot->dateExpires !== null && $lot->dateExpires >= $now && $lot->dateExpires <= $until) {
+                    $lots[] = $lot;
+                }
+            }
+        }
+
+        usort($lots, static fn(Lot $a, Lot $b) => $a->dateExpires <=> $b->dateExpires ?: $a->id <=> $b->id);
+
+        return $lots;
     }
 
     public function now(): DateTime

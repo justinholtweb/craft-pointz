@@ -150,6 +150,27 @@ intent row's `userId`) — which is what a recalculation or completion in a queu
 webhook, with nobody signed in, goes on. `quote()`, the adjuster and `commitOrder()` all use it;
 `CartController::actionRedeem` refuses anyone but the signed-in customer. Fixed in 5.0.1.
 
+### GraphQL is the signed-in customer, nothing else
+
+`gql/` mirrors `craft.pointz` and the cart actions (`pointzBalance`, `pointzLedger`,
+`pointzExpiring`, `pointzEarnFor`, `pointzQuote`, `pointzWillEarn`, `pointzRedeem`,
+`pointzRemoveRedemption`), behind the `pointz.customer:read` and `pointz.customer:redeem`
+schema components. All the logic is in `gql\resolvers\Customer`. Three rules there are not
+negotiable:
+
+- **No user argument, ever.** The session's identity is the customer. A token is shared by every
+  caller of its schema, so a `userId`/`email` argument would be a lookup of anyone's balance.
+- **Carts by number, owned by the signed-in user.** `Customer::cart()` returns null unless the
+  cart's customer is the identity (the same reasoning as `spenderId()`).
+- **Craft's GraphQL result cache is keyed by schema + query + variables, not visitor.**
+  `_registerGql()` switches `enableGraphqlCaching` off for any document that matches
+  `Customer::isPointzQuery()` and restores it after. Remove that and customer A's cached balance
+  is served to B and to guests. `tests/integration/graphql.php` proves it with caching on, and
+  fails five checks if the guard is taken out.
+
+Craft turns CSRF off for `/api`, and the session is the credential, so the mutations check the
+token themselves (`_requireCsrf()`: POST plus a valid `X-CSRF-Token`). GET mutations are refused.
+
 ### Honest about shortfalls
 
 Clamp mode spends what is there, notes the shortfall on the order and warns to the log. Throw mode
@@ -211,6 +232,8 @@ docker exec -w /var/www/html ddev-plugin-testing-web \
   php /var/www/craft-pointz/tests/integration/checks.php          # 103 checks
 docker exec -w /var/www/html ddev-plugin-testing-web \
   php /var/www/craft-pointz/tests/integration/security.php        # 11, a guest vs the signed-in customer over HTTP
+docker exec -w /var/www/html ddev-plugin-testing-web \
+  php /var/www/craft-pointz/tests/integration/graphql.php         # 24, one child process per schema, caching ON
 docker exec -w /sites/craft-pointz ddev-phpstan-runner-web \
   bash -c 'vendor/bin/phpstan analyse --memory-limit=1G && vendor/bin/ecs check'
 docker exec -w /var/www/html ddev-plugin-testing-web \

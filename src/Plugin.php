@@ -14,19 +14,27 @@ use craft\commerce\services\OrderAdjustments;
 use craft\commerce\services\OrderHistories;
 use craft\commerce\services\Transactions as CommerceTransactions;
 use craft\elements\User;
+use craft\events\ExecuteGqlQueryEvent;
 use craft\events\ModelEvent;
 use craft\events\RegisterComponentTypesEvent;
 use craft\events\RegisterEmailMessagesEvent;
+use craft\events\RegisterGqlMutationsEvent;
+use craft\events\RegisterGqlQueriesEvent;
+use craft\events\RegisterGqlSchemaComponentsEvent;
 use craft\events\RegisterUrlRulesEvent;
 use craft\events\RegisterUserPermissionsEvent;
 use craft\helpers\UrlHelper;
 use craft\services\Dashboard;
+use craft\services\Gql;
 use craft\services\SystemMessages;
 use craft\services\UserPermissions;
 use craft\web\twig\variables\CraftVariable;
 use craft\web\UrlManager;
 use justinholtweb\pointz\adjusters\Redemption as RedemptionAdjuster;
 use justinholtweb\pointz\events\TransactionEvent;
+use justinholtweb\pointz\gql\mutations\Pointz as PointzMutations;
+use justinholtweb\pointz\gql\queries\Pointz as PointzQueries;
+use justinholtweb\pointz\gql\resolvers\Customer as GqlCustomer;
 use justinholtweb\pointz\models\Rule;
 use justinholtweb\pointz\models\Settings;
 use justinholtweb\pointz\models\Transaction;
@@ -131,6 +139,7 @@ class Plugin extends BasePlugin
         $this->_registerSignupBonus();
         $this->_registerRewardTriggers();
         $this->_registerOrderPanel();
+        $this->_registerGql();
     }
 
     /**
@@ -688,6 +697,80 @@ class Plugin extends BasePlugin
                     ]);
                 } catch (\Throwable $e) {
                     Craft::error('Pointz could not reward a Dispatch subscription: ' . $e->getMessage(), 'pointz');
+                }
+            }
+        );
+    }
+
+    /**
+     * The GraphQL half of `craft.pointz`: the signed-in customer's balances, ledger, expiring value
+     * and quotes, and the redeem/remove mutations. Lite, behind its own schema components.
+     */
+    private function _registerGql(): void
+    {
+        Event::on(
+            Gql::class,
+            Gql::EVENT_REGISTER_GQL_SCHEMA_COMPONENTS,
+            static function(RegisterGqlSchemaComponentsEvent $event) {
+                $label = Craft::t('pointz', 'Pointz');
+
+                $event->queries[$label] = [
+                    PointzQueries::SCOPE . ':read' => [
+                        'label' => Craft::t('pointz', 'Query the signed-in customer’s balances, ledger and quotes'),
+                    ],
+                ];
+                $event->mutations[$label] = [
+                    PointzQueries::SCOPE . ':' . PointzMutations::ACTION => [
+                        'label' => Craft::t('pointz', 'Apply and remove redemptions on the signed-in customer’s own cart'),
+                    ],
+                ];
+            }
+        );
+
+        Event::on(
+            Gql::class,
+            Gql::EVENT_REGISTER_GQL_QUERIES,
+            static function(RegisterGqlQueriesEvent $event) {
+                $event->queries = array_merge($event->queries, PointzQueries::getQueries());
+            }
+        );
+
+        Event::on(
+            Gql::class,
+            Gql::EVENT_REGISTER_GQL_MUTATIONS,
+            static function(RegisterGqlMutationsEvent $event) {
+                $event->mutations = array_merge($event->mutations, PointzMutations::getMutations());
+            }
+        );
+
+        // Craft caches a GraphQL result under the site, the schema, the query text and its
+        // variables — nothing about who is asking. Every Pointz field answers for the signed-in
+        // customer, so a cached answer would hand one customer's balance to the next visitor (or
+        // guest) who sends the same query. Caching is switched off for any document that names a
+        // Pointz field, and put back afterwards.
+        $restore = null;
+
+        Event::on(
+            Gql::class,
+            Gql::EVENT_BEFORE_EXECUTE_GQL_QUERY,
+            static function(ExecuteGqlQueryEvent $event) use (&$restore) {
+                if (!GqlCustomer::isPointzQuery((string)$event->query)) {
+                    return;
+                }
+
+                $general = Craft::$app->getConfig()->getGeneral();
+                $restore ??= $general->enableGraphqlCaching;
+                $general->enableGraphqlCaching = false;
+            }
+        );
+
+        Event::on(
+            Gql::class,
+            Gql::EVENT_AFTER_EXECUTE_GQL_QUERY,
+            static function() use (&$restore) {
+                if ($restore !== null) {
+                    Craft::$app->getConfig()->getGeneral()->enableGraphqlCaching = $restore;
+                    $restore = null;
                 }
             }
         );

@@ -203,10 +203,7 @@ class PointzVariable
             return [];
         }
 
-        return array_values(array_filter(
-            Plugin::getInstance()->getLifecycle()->getExpiringSoon($days),
-            static fn(array $row) => (int)$row['userId'] === $userId && (int)$row['storeId'] === $storeId
-        ));
+        return Plugin::getInstance()->getLifecycle()->getExpiringSoon($days, 500, $userId, $storeId);
     }
 
     /**

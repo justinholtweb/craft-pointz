@@ -1,5 +1,24 @@
 # Release Notes for Pointz
 
+## Unreleased
+
+### Added
+
+- GraphQL, in Lite: `pointzBalance`, `pointzCreditBalance`, `pointzPendingBalance`, `pointzAccount`,
+  `pointzLedger`, `pointzExpiring`, `pointzEarnFor`, `pointzQuote` and `pointzWillEarn`, plus
+  `pointzRedeem` and `pointzRemoveRedemption` mutations that mirror the `pointz/cart/*` actions.
+  Each set has its own schema component. Every field answers for the signed-in customer only: no
+  field takes a user, and a cart is only read or changed when it belongs to the signed-in user.
+  Craft's GraphQL result cache is switched off for any query that names a Pointz field, because
+  that cache isn't keyed by visitor. The mutations need the session's CSRF token, sent in a POST.
+- `Lifecycle::getExpiringLots()`, which lists one customer's expiring lots, each with its own
+  expiry date.
+
+### Fixed
+
+- `craft.pointz.expiring()` could miss the customer when more than 500 accounts had value expiring
+  in the window. It now filters by customer in the query.
+
 ## 5.1.1 - 2026-10-03
 
 ### Added
