@@ -1,7 +1,6 @@
 # Release Notes for Pointz
 
-## Unreleased
-
+## 5.2.0 - 2026-10-09
 ### Added
 
 - GraphQL, in Lite: `pointzBalance`, `pointzCreditBalance`, `pointzPendingBalance`, `pointzAccount`,
