@@ -10,6 +10,7 @@ use craft\commerce\Plugin as Commerce;
 use craft\db\Query;
 use craft\helpers\DateTimeHelper;
 use craft\helpers\Db;
+use craft\helpers\Json;
 use craft\helpers\StringHelper;
 use DateInterval;
 use DateTime;
@@ -153,14 +154,18 @@ class Import extends Component
      * A row is `code` and `user` (ID or email), and optionally `expires`, `issued` and `remind`.
      * With no expiry the discount's own end date is used, which is where a per-customer discount
      * usually keeps it. With no reminder date, `remindDays` before the expiry, if given.
+     * `remindAfter` adds reminders counted from the issue date (or today, with none); those that
+     * have already gone by are not sent.
      *
      * A discount is all or nothing. Once Pointz manages a discount, only codes it knows the owner
-     * of will work on it — so a discount with codes this file does not account for is refused
-     * whole, rather than quietly switching off the codes nobody listed.
+     * of will work on it — so a discount with live codes this file does not account for is refused
+     * whole, rather than quietly switching off the codes nobody listed. A code that can't be used
+     * anyway doesn't count against it: one Commerce says is used up, or one the file lists that is
+     * already used or past the expiry the file gives it. Those are `retired`.
      *
      * @param array<int, array<string, string|null>> $rows Keyed by line number, columns in lower case.
-     * @param array{remindDays?: int|null, dryRun?: bool} $options
-     * @return array{batchId: string, imported: int, discounts: array<int, string>, madeSingleUse: int, skipped: array<int, string>, failed: array<int, string>}
+     * @param array{remindDays?: int|null, remindAfter?: int[], dryRun?: bool} $options
+     * @return array{batchId: string, imported: int, discounts: array<int, string>, madeSingleUse: int, retired: int, skipped: array<int, string>, failed: array<int, string>}
      */
     public function importCoupons(array $rows, array $options = []): array
     {
@@ -176,14 +181,18 @@ class Import extends Component
 
         $dryRun = (bool)($options['dryRun'] ?? false);
         $remindDays = $options['remindDays'] ?? null;
+        $remindAfter = $options['remindAfter'] ?? [];
         $batchId = StringHelper::UUID();
         $now = new DateTime();
-        $result = ['batchId' => $batchId, 'imported' => 0, 'discounts' => [], 'madeSingleUse' => 0, 'skipped' => [], 'failed' => []];
+        $result = ['batchId' => $batchId, 'imported' => 0, 'discounts' => [], 'madeSingleUse' => 0, 'retired' => 0, 'skipped' => [], 'failed' => []];
 
         /** @var array<int, Discount|null> $discounts */
         $discounts = [];
         $managed = $plugin->getCoupons()->getManagedDiscountIds();
         $planned = [];
+
+        /** @var array<int, true> $dead Codes the file lists that are used or expired, by Commerce coupon ID. */
+        $dead = [];
 
         foreach ($rows as $line => $row) {
             $code = $this->_value($row, ['code', 'coupon', 'couponcode']);
@@ -218,6 +227,7 @@ class Import extends Component
 
             if ((int)$commerceCoupon['uses'] > 0) {
                 $result['skipped'][$line] = Craft::t('pointz', 'Already used.');
+                $dead[(int)$commerceCoupon['id']] = true;
                 continue;
             }
 
@@ -270,12 +280,15 @@ class Import extends Component
 
             if ($dateExpires !== null && $dateExpires <= $now) {
                 $result['skipped'][$line] = Craft::t('pointz', 'Already expired.');
+                $dead[(int)$commerceCoupon['id']] = true;
                 continue;
             }
 
             if ($dateRemind === null && $dateExpires !== null && $remindDays) {
                 $dateRemind = (clone $dateExpires)->sub(new DateInterval("P{$remindDays}D"));
             }
+
+            $reminders = $plugin->getCoupons()->reminderSchedule($dateIssued ?? $now, $dateExpires, $dateRemind, $remindAfter, $now);
 
             $planned[(int)$commerceCoupon['id']] = [
                 'line' => $line,
@@ -288,20 +301,35 @@ class Import extends Component
                 'userId' => $user->id,
                 'dateExpires' => $dateExpires,
                 'dateIssued' => $dateIssued,
-                'dateRemind' => $dateRemind,
+                'reminders' => $reminders,
             ];
         }
 
-        // All or nothing per discount: every code on it must be in this file, or already Pointz's.
+        // All or nothing per discount: every code on it that could still be used must be in this
+        // file, or already Pointz's.
         $byDiscount = [];
 
         foreach ($planned as $entry) {
             $byDiscount[$entry['discount']->id][] = $entry;
         }
 
+        $retired = [];
+
         foreach ($byDiscount as $discountId => $entries) {
             $listed = array_map(static fn(array $entry) => $entry['couponId'], $entries);
-            $others = (new Query())
+            $accounted = array_merge($listed, array_keys($dead));
+            $others = (int)(new Query())
+                ->from(CommerceTable::COUPONS)
+                ->where(['discountId' => $discountId])
+                ->andWhere(['not', ['id' => $accounted]])
+                ->andWhere(['or',
+                    ['maxUses' => null],
+                    ['<=', 'maxUses', 0],
+                    new Expression('[[uses]] < [[maxUses]]'),
+                ])
+                ->count();
+
+            $retired[$discountId] = (int)(new Query())
                 ->from(CommerceTable::COUPONS)
                 ->where(['discountId' => $discountId])
                 ->andWhere(['not', ['id' => $listed]])
@@ -335,6 +363,10 @@ class Import extends Component
                 $result['imported']++;
                 $result['discounts'][$discountId] = $entry['discount']->name;
             }
+
+            if (isset($result['discounts'][$discountId])) {
+                $result['retired'] += $retired[$discountId];
+            }
         }
 
         ksort($result['failed']);
@@ -345,8 +377,9 @@ class Import extends Component
     /**
      * Undoes an import. Balances: whatever is left of each opening lot is taken back, as
      * `Grants::reverseBatch()` does. Coupons: codes nobody has used yet are handed back to
-     * Commerce untouched, as if Pointz had never seen them. A code that has been used or has expired
-     * since stays in Pointz's history, and a discount the sweep has already deleted is gone.
+     * Commerce untouched, as if Pointz had never seen them — including the use limit, if the import
+     * set one. A code that has been used or has expired since stays in Pointz's history, and a
+     * discount the sweep has already deleted is gone.
      *
      * @return array{reversed: int, short: int, released: int, kept: int}
      */
@@ -354,6 +387,22 @@ class Import extends Component
     {
         $reversal = Plugin::getInstance()->getGrants()->reverseBatch($batchId, $authorId);
         $reference = self::REFERENCE_PREFIX . $batchId;
+
+        $limited = (new Query())
+            ->select(['couponId'])
+            ->from(Table::COUPONS)
+            ->where([
+                'reference' => $reference,
+                'ruleId' => null,
+                'status' => Coupon::STATUS_ACTIVE,
+                'madeSingleUse' => true,
+            ])
+            ->andWhere(['not', ['couponId' => null]])
+            ->column();
+
+        if ($limited) {
+            Db::update(CommerceTable::COUPONS, ['maxUses' => null], ['id' => $limited, 'uses' => 0]);
+        }
 
         $released = Db::delete(Table::COUPONS, [
             'reference' => $reference,
@@ -468,7 +517,9 @@ class Import extends Component
                 'status' => Coupon::STATUS_ACTIVE,
                 'reference' => self::REFERENCE_PREFIX . $batchId,
                 'dateExpires' => $entry['dateExpires'] ? Db::prepareDateForDb($entry['dateExpires']) : null,
-                'dateRemind' => $entry['dateRemind'] ? Db::prepareDateForDb($entry['dateRemind']) : null,
+                'dateRemind' => $entry['reminders'][0]['date'] ?? null,
+                'reminders' => $entry['reminders'] ? Json::encode($entry['reminders']) : null,
+                'madeSingleUse' => (bool)$madeSingleUse,
                 'dateCreated' => $entry['dateIssued'] ? Db::prepareDateForDb($entry['dateIssued']) : $now,
                 'dateUpdated' => $now,
                 'uid' => StringHelper::UUID(),

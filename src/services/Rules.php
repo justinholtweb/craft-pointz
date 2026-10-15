@@ -148,14 +148,19 @@ class Rules extends Component
         $record->eventHandle = $rule->eventHandle ?: null;
         $record->thresholdPoints = $rule->thresholdPoints;
         $record->thresholdSpend = $rule->thresholdSpend;
+        $record->thresholdReset = $rule->thresholdReset;
+        $record->thresholdOncePerOrder = $rule->thresholdOncePerOrder;
         $record->birthdayField = $rule->birthdayField ?: null;
         $record->reviewRequiresText = $rule->reviewRequiresText;
         $record->reviewPurchasedOnly = $rule->reviewPurchasedOnly;
+        $record->reviewOncePerProduct = $rule->reviewOncePerProduct;
         $record->createAccount = $rule->createAccount;
         $record->couponType = $rule->couponType;
         $record->couponAmount = $rule->couponAmount;
         $record->couponValidDays = $rule->couponValidDays;
         $record->couponRemindDays = $rule->couponRemindDays;
+        $rule->couponRemindAfterDays = $rule->getCouponRemindAfterDays() ? implode(', ', $rule->getCouponRemindAfterDays()) : null;
+        $record->couponRemindAfterDays = $rule->couponRemindAfterDays;
         $record->couponNotify = $rule->couponNotify;
         // `couponDiscountId` is written only by Coupons::ensureDiscount(). A model loaded before
         // the discount was replaced or deleted would otherwise put back an ID that is gone.
@@ -340,14 +345,18 @@ class Rules extends Component
                 'eventHandle',
                 'thresholdPoints',
                 'thresholdSpend',
+                'thresholdReset',
+                'thresholdOncePerOrder',
                 'birthdayField',
                 'reviewRequiresText',
                 'reviewPurchasedOnly',
+                'reviewOncePerProduct',
                 'createAccount',
                 'couponType',
                 'couponAmount',
                 'couponValidDays',
                 'couponRemindDays',
+                'couponRemindAfterDays',
                 'couponNotify',
                 'couponDiscountId',
                 'dateCreated',

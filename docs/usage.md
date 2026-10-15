@@ -148,7 +148,8 @@ Only rules with the option on create accounts, and only for a handle they answer
 
 Needs [Stars](https://justinholt.com/plugins/craft-stars). The rule fires when a review is
 approved, whether by the bulk action or on the review's own page, and pays once per review,
-however often it is saved afterwards.
+however often it is saved afterwards — or, with **Once per product** on, once per customer per
+reviewed product, so a second review of the same product pays nothing.
 
 Stars records a reviewer's email rather than a user, so the customer is the account with that
 email. A review from someone without an account earns nothing. Two options:
@@ -180,6 +181,13 @@ a refund handing points back, or a hold being released.
   that many points, shown as *Exchanged*, and then the coupon or credit. It fires again each time
   the balance gets back there. If the balance is enough for several rewards at once, the
   customer gets all of them, up to 20 in one go. This is "every 500 points becomes €5 of credit".
+  - **Spend the whole balance** takes everything the customer has instead of the threshold, and
+    fires once: "at 100 points, a 20% coupon, and start again from zero".
+  - **At most once per order** pays one reward for the points one order brings in, however far
+    past the threshold they take the balance, and leaves the rest on it for the next order. An
+    order's points can arrive more than once (two earning rules, a hold released later); the rule
+    still pays once for that order. Points that don't come from an order pay at most one reward
+    each time they arrive.
 - With it off, the balance is left alone and the rule fires once per customer, ever. This is a
   milestone.
 
@@ -190,7 +198,9 @@ switch on *stop after this one*: a customer reaching 100 gets the 20% coupon, no
 
 Set **Awards** to *A coupon* and the rule issues a **single-use Commerce coupon code to one
 customer**: a percentage or a fixed amount off the order, optionally expiring after a number of
-days, optionally with a reminder email before it does.
+days, optionally with a reminder email before it does, and optionally with reminders a number of
+days after it was issued (**Remind after issue**, a list such as `30, 60, 180, 365`) for as long
+as it goes unused. A coupon that never expires can still be reminded about this way.
 
 Commerce coupons have no owner and no expiry of their own, which is why shops doing this by hand
 end up with one discount per customer. Pointz keeps **one Commerce discount per rule** and adds a
@@ -203,15 +213,22 @@ code to it each time it issues one:
 - A code only discounts the order of **the customer it was issued to**, and only until it expires.
   Pointz checks both every time Commerce matches the discount. Commerce makes whoever owns an
   email the customer of a guest cart that types it in, so the owner can use their code without
-  signing in, and anybody else would need both their email and the code.
+  signing in, and anybody else would need both their email and the code. Someone else's code, or
+  one that has expired, is taken off the cart with a notice (`invalidCouponRemoved`, "Coupon
+  removed: Coupon not valid."), exactly as Commerce does with a code that's been used.
 - Commerce enforces the single use and counts it. Pointz records which order the code went on.
 - `pointz/sweep/run` expires codes past their date and **deletes them from Commerce**, sends the
-  reminders that are due, and removes discounts that nothing issues against any more. Pointz keeps
+  reminders that are due, and removes discounts that nothing issues against any more. A reminder
+  that fails to send is tried again on the next run. If several of a code's reminders have come
+  due since the last run, it gets one email, not several. Pointz keeps
   its own record of every code, so the customer's history still says what they had.
 - As with any Commerce discount, only **promotable** products are discounted.
 
-The two emails, *When Pointz issues a coupon* and *When a Pointz coupon is about to expire*, are
-edited under **Utilities → System Messages**, like Craft's own. Both are optional per rule. To send
+The three emails, *When Pointz issues a coupon*, *When a Pointz coupon is about to expire* and
+*When a Pointz coupon is still unused* (the reminders after issue), are edited under **Utilities →
+System Messages**, like Craft's own. All are optional per rule, and all render with Craft's Twig
+sandbox on: a coupon's `code`, `type`, `amount`, `status`, `valueLabel`, `isUsable` and dates, and
+a rule's `name` and `couponLabel`, are allowed in sandboxed templates. To send
 them some other way, see `Coupons::EVENT_BEFORE_REMIND` in [Twig and events](twig.md).
 
 A customer's coupons are listed on their balance page in the control panel, where a live one can
@@ -341,7 +358,7 @@ php craft pointz/grant/revert <batch-id>
 
 # Bring a programme over from another system (see below)
 php craft pointz/import/balances balances.csv --dry-run
-php craft pointz/import/coupons coupons.csv --remind-days=14 --dry-run
+php craft pointz/import/coupons coupons.csv --remind-days=14 --remind-after=30,60,180,365 --dry-run
 php craft pointz/import/revert <batch-id>
 
 # Award orders that completed before a rule existed (Pro)
@@ -411,13 +428,20 @@ discount per customer ends up with none of them.
 | `issued` | Optional. When the old system sent it, for the customer's history. |
 | `remind` | Optional. When to send the expiry reminder. Defaults to `--remind-days` before the expiry, if given. |
 
+`--remind-after` adds reminders counted from `issued` (or from today, for a row without one),
+sent while the code is unused. Offsets that have already gone by are dropped rather than all sent
+on the first night.
+
 The value shown to the customer is read from the discount: its percentage off, or its amount off.
 
 What is refused, with the reason on the line:
 
-- **A discount with codes the file doesn't list.** Once Pointz manages a discount, only codes it
-  knows the owner of work on it. A merchant's shared code on the same discount would quietly stop
-  working, so the whole discount is refused instead.
+- **A discount with live codes the file doesn't list.** Once Pointz manages a discount, only codes
+  it knows the owner of work on it. A merchant's shared code on the same discount would quietly
+  stop working, so the whole discount is refused instead. Codes that can't be used anyway don't
+  count: one Commerce says is used up, or one the file lists that is already used or past the
+  expiry the file gives it. The command says how many of those it left behind; they stop working
+  once Pointz manages the discount.
 - A discount that applies without a code, or takes neither a percentage nor an amount off (free
   shipping, for example).
 - A code that can be used more than once. A code with no use limit is set to one use, since that
@@ -427,6 +451,7 @@ What is refused, with the reason on the line:
 The dry run lists every discount Pointz would take over. Read it: they are the discounts the sweep
 will delete when their codes are done.
 
-`pointz/import/revert` hands unused codes back to Commerce, untouched. A code that has been used or
+`pointz/import/revert` hands unused codes back to Commerce as they were, lifting the single-use
+limit the import put on any code that had none. A code that has been used or
 has expired since stays in Pointz's history, and a discount the sweep has already deleted stays
 deleted.

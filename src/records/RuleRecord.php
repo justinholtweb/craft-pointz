@@ -35,14 +35,18 @@ use justinholtweb\pointz\db\Table;
  * @property string|null $eventHandle
  * @property float|null $thresholdPoints
  * @property bool $thresholdSpend
+ * @property bool $thresholdReset
+ * @property bool $thresholdOncePerOrder
  * @property string|null $birthdayField
  * @property bool $reviewRequiresText
  * @property bool $reviewPurchasedOnly
+ * @property bool $reviewOncePerProduct
  * @property bool $createAccount
  * @property string $couponType
  * @property float|null $couponAmount
  * @property int|null $couponValidDays
  * @property int|null $couponRemindDays
+ * @property string|null $couponRemindAfterDays
  * @property bool $couponNotify
  * @property int|null $couponDiscountId
  * @property string $dateCreated

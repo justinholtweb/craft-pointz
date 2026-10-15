@@ -160,10 +160,14 @@ class Install extends Migration
             // A threshold rule fires when the points balance reaches this, and by default spends it.
             'thresholdPoints' => $this->decimal(19, 5),
             'thresholdSpend' => $this->boolean()->notNull()->defaultValue(true),
+            // Spend the whole balance rather than the threshold, and fire once per order at most.
+            'thresholdReset' => $this->boolean()->notNull()->defaultValue(false),
+            'thresholdOncePerOrder' => $this->boolean()->notNull()->defaultValue(false),
             // The handle of the user field a birthday rule reads.
             'birthdayField' => $this->string(),
             'reviewRequiresText' => $this->boolean()->notNull()->defaultValue(true),
             'reviewPurchasedOnly' => $this->boolean()->notNull()->defaultValue(false),
+            'reviewOncePerProduct' => $this->boolean()->notNull()->defaultValue(false),
             'createAccount' => $this->boolean()->notNull()->defaultValue(false),
             // What a coupon rule hands out. The Commerce discount is created by the rule and
             // replaced, never edited, when the amount changes — so a code already issued keeps
@@ -172,6 +176,8 @@ class Install extends Migration
             'couponAmount' => $this->decimal(19, 5),
             'couponValidDays' => $this->integer(),
             'couponRemindDays' => $this->integer(),
+            // Day offsets from the issue date, "30,60,180,365".
+            'couponRemindAfterDays' => $this->string(),
             'couponNotify' => $this->boolean()->notNull()->defaultValue(false),
             'couponDiscountId' => $this->integer(),
             'dateCreated' => $this->dateTime()->notNull(),
@@ -278,6 +284,10 @@ class Install extends Migration
             'dateExpires' => $migration->dateTime(),
             'dateRemind' => $migration->dateTime(),
             'dateReminded' => $migration->dateTime(),
+            // Every reminder the code is due, as JSON; `dateRemind` is the next of them.
+            'reminders' => $migration->text(),
+            // An imported code Pointz limited to one use, so a revert can lift the limit again.
+            'madeSingleUse' => $migration->boolean()->notNull()->defaultValue(false),
             'dateUsed' => $migration->dateTime(),
             'dateCreated' => $migration->dateTime()->notNull(),
             'dateUpdated' => $migration->dateTime()->notNull(),

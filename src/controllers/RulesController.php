@@ -147,14 +147,18 @@ class RulesController extends Controller
             $rule->eventHandle = $this->request->getBodyParam('eventHandle') ?: null;
             $rule->thresholdPoints = $this->_number($this->request->getBodyParam('thresholdPoints'));
             $rule->thresholdSpend = (bool)$this->request->getBodyParam('thresholdSpend', $rule->thresholdSpend);
+            $rule->thresholdReset = (bool)$this->request->getBodyParam('thresholdReset', $rule->thresholdReset);
+            $rule->thresholdOncePerOrder = (bool)$this->request->getBodyParam('thresholdOncePerOrder', $rule->thresholdOncePerOrder);
             $rule->birthdayField = $this->request->getBodyParam('birthdayField') ?: null;
             $rule->reviewRequiresText = (bool)$this->request->getBodyParam('reviewRequiresText', $rule->reviewRequiresText);
             $rule->reviewPurchasedOnly = (bool)$this->request->getBodyParam('reviewPurchasedOnly', $rule->reviewPurchasedOnly);
+            $rule->reviewOncePerProduct = (bool)$this->request->getBodyParam('reviewOncePerProduct', $rule->reviewOncePerProduct);
             $rule->createAccount = (bool)$this->request->getBodyParam('createAccount', $rule->createAccount);
             $rule->couponType = $this->request->getBodyParam('couponType', $rule->couponType);
             $rule->couponAmount = $this->_number($this->request->getBodyParam('couponAmount'));
             $rule->couponValidDays = $this->_int($this->request->getBodyParam('couponValidDays'));
             $rule->couponRemindDays = $this->_int($this->request->getBodyParam('couponRemindDays'));
+            $rule->couponRemindAfterDays = trim((string)$this->request->getBodyParam('couponRemindAfterDays')) ?: null;
             $rule->couponNotify = (bool)$this->request->getBodyParam('couponNotify', $rule->couponNotify);
         }
 

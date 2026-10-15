@@ -14,6 +14,7 @@ use craft\commerce\services\OrderAdjustments;
 use craft\commerce\services\OrderHistories;
 use craft\commerce\services\Transactions as CommerceTransactions;
 use craft\elements\User;
+use craft\events\DefineRulesEvent;
 use craft\events\ExecuteGqlQueryEvent;
 use craft\events\ModelEvent;
 use craft\events\RegisterComponentTypesEvent;
@@ -77,7 +78,7 @@ class Plugin extends BasePlugin
     public const EDITION_LITE = 'lite';
     public const EDITION_PRO = 'pro';
 
-    public string $schemaVersion = '5.1.1';
+    public string $schemaVersion = '5.3.0';
     public bool $hasCpSettings = true;
     public bool $hasCpSection = true;
 
@@ -595,7 +596,7 @@ class Plugin extends BasePlugin
                 }
 
                 try {
-                    Plugin::getInstance()->getRewards()->evaluateThresholds($transaction->userId, $transaction->storeId);
+                    Plugin::getInstance()->getRewards()->evaluateThresholds($transaction->userId, $transaction->storeId, $transaction->orderId);
                 } catch (\Throwable $e) {
                     Craft::error('Pointz could not evaluate thresholds for user ' . $transaction->userId . ': ' . $e->getMessage(), 'pointz');
                 }
@@ -608,6 +609,21 @@ class Plugin extends BasePlugin
             Discounts::EVENT_DISCOUNT_MATCHES_ORDER,
             static function(MatchOrderEvent $event) {
                 Plugin::getInstance()->getCoupons()->enforceOwnership($event);
+            }
+        );
+
+        // …and a code that can't apply says so, as a used one does, instead of sitting on the cart
+        // taking nothing off. Appended, so it runs after Commerce's own coupon check.
+        Event::on(
+            Order::class,
+            Model::EVENT_DEFINE_RULES,
+            static function(DefineRulesEvent $event) {
+                /** @var Order $order */
+                $order = $event->sender;
+
+                $event->rules[] = [['couponCode'], static function(string $attribute) use ($order) {
+                    Plugin::getInstance()->getCoupons()->validateCouponCode($order, $attribute);
+                }];
             }
         );
 

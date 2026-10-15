@@ -1569,6 +1569,158 @@ try {
         return $times === 1 && $fresh->dateReminded !== null ?: "reminded $times times";
     });
 
+    check('a reminder that fails to send is put back, and the next sweep sends it', function() use ($couponsService, $rulesService, $couponOwner, $tag, $storeId) {
+        $rule = $rulesService->getRuleByHandle($tag . 'WelcomeCoupon', $storeId);
+        $coupon = $couponsService->issue($rule, $couponOwner, $storeId);
+        craft\helpers\Db::update(Table::COUPONS, ['dateRemind' => craft\helpers\Db::prepareDateForDb(new DateTime('-1 minute'))], ['id' => $coupon->id]);
+
+        // The mailer refusing the message is what a broken transport looks like from here.
+        $refuse = static function(craft\events\MailEvent $event) {
+            $event->isValid = false;
+        };
+        $mailer = Craft::$app->getMailer();
+        $mailer->on(craft\mail\Mailer::EVENT_BEFORE_SEND, $refuse);
+
+        try {
+            $failedRun = $couponsService->remindDue();
+        } finally {
+            $mailer->off(craft\mail\Mailer::EVENT_BEFORE_SEND, $refuse);
+        }
+
+        $afterFailure = $couponsService->getCouponById($coupon->id);
+
+        $seen = 0;
+        $handler = static function(justinholtweb\pointz\events\CouponEvent $event) use (&$seen, $coupon) {
+            if ($event->coupon->id === $coupon->id) {
+                $seen++;
+            }
+            $event->isValid = false;
+        };
+        $couponsService->on(justinholtweb\pointz\services\Coupons::EVENT_BEFORE_REMIND, $handler);
+
+        try {
+            $couponsService->remindDue();
+        } finally {
+            $couponsService->off(justinholtweb\pointz\services\Coupons::EVENT_BEFORE_REMIND, $handler);
+        }
+
+        $afterRetry = $couponsService->getCouponById($coupon->id);
+
+        return $afterFailure->dateRemind !== null && $afterFailure->dateReminded === null
+            && $seen === 1 && $afterRetry->dateRemind === null && $afterRetry->dateReminded !== null
+            ?: json_encode(['failedRun' => $failedRun, 'afterFailure' => $afterFailure->toArray(['dateRemind', 'dateReminded']), 'seen' => $seen, 'afterRetry' => $afterRetry->toArray(['dateRemind', 'dateReminded'])]);
+    });
+
+    check('reminders after issue: one per offset, a missed sweep sends one rather than a burst', function() use ($couponsService, $couponOwner, $storeId) {
+        $rule = makeRule('nagCoupon', [
+            'event' => Rule::EVENT_CUSTOM,
+            'eventHandle' => 'nag',
+            'currency' => Rule::CURRENCY_COUPON,
+            'couponAmount' => 20,
+            'couponRemindAfterDays' => '180, 30,60, 30',
+        ]);
+        $coupon = $couponsService->issue($rule, $couponOwner, $storeId);
+        $schedule = $coupon->getReminderSchedule();
+        $firstInDays = $coupon->dateRemind ? (int)round(($coupon->dateRemind->getTimestamp() - time()) / 86400) : null;
+
+        if ($rule->couponRemindAfterDays !== '30, 60, 180' || count($schedule) !== 3 || $firstInDays !== 30 || $schedule[0]['kind'] !== 'issued') {
+            return json_encode(['stored' => $rule->couponRemindAfterDays, 'schedule' => count($schedule), 'first' => $firstInDays]);
+        }
+
+        // Pretend the sweep missed the first two.
+        $db = static fn(string $when) => craft\helpers\Db::prepareDateForDb(new DateTime($when));
+        craft\helpers\Db::update(Table::COUPONS, [
+            'dateRemind' => $db('-3 days'),
+            'reminders' => craft\helpers\Json::encode([
+                ['date' => $db('-3 days'), 'kind' => 'issued'],
+                ['date' => $db('-1 day'), 'kind' => 'issued'],
+                ['date' => $db('+10 days'), 'kind' => 'issued'],
+            ]),
+        ], ['id' => $coupon->id]);
+
+        $kinds = [];
+        $handler = static function(justinholtweb\pointz\events\CouponEvent $event) use (&$kinds, $coupon) {
+            if ($event->coupon->id === $coupon->id) {
+                $kinds[] = $event->reminder;
+            }
+            $event->isValid = false;
+        };
+        $couponsService->on(justinholtweb\pointz\services\Coupons::EVENT_BEFORE_REMIND, $handler);
+
+        try {
+            $couponsService->remindDue();
+            $couponsService->remindDue();
+        } finally {
+            $couponsService->off(justinholtweb\pointz\services\Coupons::EVENT_BEFORE_REMIND, $handler);
+        }
+
+        $fresh = $couponsService->getCouponById($coupon->id);
+        $nextInDays = $fresh->dateRemind ? (int)round(($fresh->dateRemind->getTimestamp() - time()) / 86400) : null;
+
+        return $kinds === ['issued'] && $nextInDays === 10 ?: json_encode(['kinds' => $kinds, 'next' => $nextInDays]);
+    });
+
+    check('a reminder after issue that would land after the expiry is refused at save', function() {
+        $rule = new Rule([
+            'storeId' => 1,
+            'name' => 'x',
+            'handle' => 'x',
+            'event' => Rule::EVENT_CUSTOM,
+            'eventHandle' => 'x',
+            'currency' => Rule::CURRENCY_COUPON,
+            'couponAmount' => 5,
+            'couponValidDays' => 30,
+            'couponRemindAfterDays' => '10, 45',
+        ]);
+        $rule->validate(['couponRemindAfterDays']);
+        $late = $rule->hasErrors('couponRemindAfterDays');
+
+        $rule->couponRemindAfterDays = 'soon';
+        $rule->clearErrors();
+        $rule->validate(['couponRemindAfterDays']);
+
+        return $late && $rule->hasErrors('couponRemindAfterDays') ?: 'accepted';
+    });
+
+    check('someone else’s code is taken off their cart with a notice, as a used one is', function() use ($couponsService, $rulesService, $couponOwner, $couponStranger, $promoVariant, $tag, $storeId) {
+        $rule = $rulesService->getRuleByHandle($tag . 'WelcomeCoupon', $storeId);
+        $coupon = $couponsService->issue($rule, $couponOwner, $storeId);
+
+        $theirs = makeCart($couponStranger, $promoVariant, 1);
+        $theirs->couponCode = $coupon->code;
+        $theirs->validate(['couponCode']);
+        $notices = array_map(static fn($notice) => $notice->type, $theirs->getNotices(null, 'couponCode'));
+
+        $mine = makeCart($couponOwner, $promoVariant, 1);
+        $mine->couponCode = $coupon->code;
+        $mine->validate(['couponCode']);
+
+        return $theirs->couponCode === null && in_array('invalidCouponRemoved', $notices, true) && $mine->couponCode === $coupon->code
+            ?: json_encode(['theirs' => $theirs->couponCode, 'notices' => $notices, 'mine' => $mine->couponCode]);
+    });
+
+    check('the coupon emails render under the Twig sandbox', function() use ($couponsService, $rulesService, $couponOwner, $tag, $storeId) {
+        $rule = $rulesService->getRuleByHandle($tag . 'WelcomeCoupon', $storeId);
+        $coupon = $couponsService->getCoupons(['userId' => $couponOwner->id, 'status' => 'active'])[0];
+        $general = Craft::$app->getConfig()->getGeneral();
+        $was = $general->enableTwigSandbox;
+        $general->enableTwigSandbox = true;
+        $view = Craft::$app->getView();
+        $rendered = [];
+
+        try {
+            foreach (justinholtweb\pointz\services\Coupons::systemMessages() as $message) {
+                $variables = ['user' => $couponOwner, 'coupon' => $coupon, 'rule' => $rule, 'value' => $coupon->getValueLabel()];
+                $rendered[] = $view->renderSandboxedString($message['subject'], $variables)
+                    . $view->renderSandboxedString($message['body'] . '{{ coupon.isUsable ? "" : "" }}{{ coupon.valueLabel }}{{ rule.name }}', $variables);
+            }
+        } finally {
+            $general->enableTwigSandbox = $was;
+        }
+
+        return count($rendered) === 3 && str_contains($rendered[0], $coupon->code) ?: json_encode($rendered);
+    });
+
     check('changing a coupon’s value starts a new discount and leaves issued codes their old one', function() use ($couponsService, $rulesService, $couponOwner, $commerce, $tag, $storeId) {
         $rule = $rulesService->getRuleByHandle($tag . 'WelcomeCoupon', $storeId);
         $oldDiscountId = $rule->couponDiscountId;
@@ -1696,6 +1848,53 @@ try {
             ?: json_encode(array_map(static fn($c) => $c->amount, $coupons));
     });
 
+    check('“at most once per order” pays one reward for an order, however many arrivals it brings', function() use ($ledger, $accounts, $couponsService, $variantA, $storeId) {
+        $rule = makeRule('oncePerOrder', [
+            'event' => Rule::EVENT_THRESHOLD,
+            'thresholdPoints' => 50,
+            'thresholdOncePerOrder' => true,
+            'currency' => Rule::CURRENCY_COUPON,
+            'couponAmount' => 20,
+        ]);
+        onlyRules([$rule]);
+        $user = makeUser('oncePerOrder');
+        $order = makeCart($user, $variantA, 1);
+
+        // Two earning rules on one order are two arrivals.
+        $ledger->credit($user->id, $storeId, Rule::CURRENCY_POINTS, 150, ['orderId' => $order->id]);
+        $ledger->credit($user->id, $storeId, Rule::CURRENCY_POINTS, 20, ['orderId' => $order->id]);
+        $afterOrder = count($couponsService->getCoupons(['userId' => $user->id]));
+
+        // The next arrival pays again, and the rest stays.
+        $ledger->credit($user->id, $storeId, Rule::CURRENCY_POINTS, 10);
+        $accounts->clearMemo();
+        $coupons = count($couponsService->getCoupons(['userId' => $user->id]));
+        $balance = $accounts->getAccount($user->id, $storeId)->pointsBalance;
+
+        return $afterOrder === 1 && $coupons === 2 && $balance == 80.0
+            ?: json_encode(['afterOrder' => $afterOrder, 'coupons' => $coupons, 'balance' => $balance]);
+    });
+
+    check('“spend the whole balance” pays once and takes everything', function() use ($grants, $accounts, $couponsService, $ledger, $storeId) {
+        $rule = makeRule('resetBalance', [
+            'event' => Rule::EVENT_THRESHOLD,
+            'thresholdPoints' => 100,
+            'thresholdReset' => true,
+            'currency' => Rule::CURRENCY_COUPON,
+            'couponAmount' => 20,
+        ]);
+        onlyRules([$rule]);
+        $user = makeUser('resetBalance');
+
+        $grants->grant($user->id, $storeId, Rule::CURRENCY_POINTS, 230, 'fixture');
+        $accounts->clearMemo();
+        $coupons = $couponsService->getCoupons(['userId' => $user->id]);
+        $spent = (float)$ledger->getTransactionsQuery(['userId' => $user->id, 'kind' => Transaction::KIND_REWARD])->sum('amount');
+
+        return count($coupons) === 1 && $accounts->getAccount($user->id, $storeId)->pointsBalance == 0.0 && $spent == -230.0
+            ?: json_encode(['coupons' => count($coupons), 'balance' => $accounts->getAccount($user->id, $storeId)->pointsBalance, 'spent' => $spent]);
+    });
+
     // ---------------------------------------------------------------------------------------
     section('Reviews and birthdays');
 
@@ -1775,6 +1974,27 @@ try {
         $bought = $accounts->getAccount($user->id, $storeId)?->pointsBalance ?? 0.0;
 
         return $notBought == 0.0 && $bought == 10.0 ?: "not bought $notBought, bought $bought";
+    });
+
+    check('“once per product” pays for the first review of a product and not a second', function() use ($makeReview, $accounts, $storeId, $reviewClass, $product, $productB) {
+        if (!class_exists($reviewClass)) {
+            return true;
+        }
+
+        $rule = makeRule('reviewPerProduct', ['event' => Rule::EVENT_REVIEW, 'rate' => 10, 'reviewOncePerProduct' => true]);
+        onlyRules([$rule]);
+        $user = makeUser('serialReviewer');
+
+        $makeReview($user, $product->id, 'Loved it.');
+        $makeReview($user, $product->id, 'Still love it.');
+        $accounts->clearMemo();
+        $sameProduct = $accounts->getAccount($user->id, $storeId)?->pointsBalance ?? 0.0;
+
+        $makeReview($user, $productB->id, 'This one too.');
+        $accounts->clearMemo();
+        $another = $accounts->getAccount($user->id, $storeId)?->pointsBalance ?? 0.0;
+
+        return $sameProduct == 10.0 && $another == 20.0 ?: "same product $sameProduct, another $another";
     });
 
     check('a birthday is paid once a year, in its grace window, and 29 February falls on the 28th', function() use ($rewards, $accounts, $couponsService, $storeId) {
@@ -1914,7 +2134,9 @@ try {
         Craft::$app->getElements()->saveElement($theirs, false);
 
         $expiresOk = $coupon && abs($coupon->dateExpires->getTimestamp() - $legacy->dateTo->getTimestamp()) < 2;
-        $remindOk = $coupon && abs(($coupon->dateExpires->getTimestamp() - $coupon->dateRemind->getTimestamp()) - 7 * 86400) < 2;
+        // Calendar days, not seconds: seven days before an expiry across a clock change is not
+        // 7 × 86,400 seconds.
+        $remindOk = $coupon && $coupon->dateRemind->diff($coupon->dateExpires)->days === 7;
 
         return $result['imported'] === 1 && $result['madeSingleUse'] === 1 && (int)$maxUses === 1
             && $coupon->userId === $importA->id && $coupon->ruleId === null && $coupon->type === Rule::COUPON_PERCENT && $coupon->amount == 10.0
@@ -1945,6 +2167,47 @@ try {
         return $result['imported'] === 1 && $managedBefore && !$managedAfter && $reverted['released'] === 1 && $codeLeft
             && $couponsService->getCouponByCode("revert-$tag") === null
             ?: json_encode(['result' => $result, 'before' => $managedBefore, 'after' => $managedAfter, 'reverted' => $reverted, 'codeLeft' => $codeLeft]);
+    });
+
+    check('used codes, and codes the file says have expired, don’t hold a discount back', function() use ($importer, $couponsService, $importA, $tag) {
+        $discount = makeLegacyDiscount('Per customer ' . $tag, ["live-$tag", "spent-$tag", "lapsed-$tag", "also-spent-$tag"], 10);
+        // One used up in Commerce and not in the file, one the file lists as used.
+        craft\helpers\Db::update('{{%commerce_coupons}}', ['uses' => 1, 'maxUses' => 1], ['code' => "spent-$tag"]);
+        craft\helpers\Db::update('{{%commerce_coupons}}', ['uses' => 1], ['code' => "also-spent-$tag"]);
+        $file = writeCsv([
+            'code,user,expires',
+            "live-$tag,{$importA->id},",
+            "lapsed-$tag,{$importA->id},2020-01-01",
+            "also-spent-$tag,{$importA->id},",
+        ]);
+        $result = $importer->importCoupons($importer->readCsv($file));
+
+        return $result['imported'] === 1 && count($result['skipped']) === 2 && $result['failed'] === [] && $result['retired'] === 3
+            && $couponsService->getCouponByCode("live-$tag")?->discountId === $discount->id
+            ?: json_encode($result);
+    });
+
+    check('reverting lifts the use limit the import put on a code', function() use ($importer, $importA, $tag) {
+        $discount = makeLegacyDiscount('Unlimited ' . $tag, ["unlimited-$tag"], 5);
+        $result = $importer->importCoupons($importer->readCsv(writeCsv(['code,user', "unlimited-$tag,{$importA->id}"])));
+        $limited = (new Query())->select(['maxUses'])->from('{{%commerce_coupons}}')->where(['discountId' => $discount->id])->scalar();
+        $importer->revert($result['batchId']);
+        $after = (new Query())->select(['maxUses'])->from('{{%commerce_coupons}}')->where(['discountId' => $discount->id])->scalar();
+
+        return $result['madeSingleUse'] === 1 && (int)$limited === 1 && $after === null
+            ?: json_encode(['result' => $result, 'limited' => $limited, 'after' => $after]);
+    });
+
+    check('imported codes get reminders after issue, counted from the issue date, without the ones gone by', function() use ($importer, $couponsService, $importA, $tag) {
+        makeLegacyDiscount('Nag ' . $tag, ["nag-$tag"], 20);
+        $issued = (new DateTime('-100 days'))->format('Y-m-d');
+        $result = $importer->importCoupons($importer->readCsv(writeCsv(['code,user,issued', "nag-$tag,{$importA->id},$issued"])), ['remindAfter' => [30, 180, 365]]);
+        $coupon = $couponsService->getCouponByCode("nag-$tag");
+        $schedule = $coupon ? $coupon->getReminderSchedule() : [];
+        $nextInDays = $coupon?->dateRemind ? (int)round(($coupon->dateRemind->getTimestamp() - time()) / 86400) : null;
+
+        return $result['imported'] === 1 && count($schedule) === 2 && $nextInDays === 80
+            ?: json_encode(['result' => $result, 'schedule' => count($schedule), 'next' => $nextInDays]);
     });
 
     check('a taken-over code is skipped on a second run, and once it expires the sweep deletes it and its discount', function() use ($importer, $couponsService, $commerce, $legacy, $importA, $tag) {

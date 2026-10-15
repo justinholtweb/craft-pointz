@@ -70,7 +70,7 @@ class Lifecycle extends Component
         $limit ??= Plugin::getInstance()->getSettings()->sweepBatchSize;
 
         $rows = (new Query())
-            ->select(['id', 'userId', 'storeId'])
+            ->select(['id', 'userId', 'storeId', 'orderId'])
             ->from(Table::LOTS)
             ->where(['status' => Lot::STATUS_PENDING])
             ->andWhere(['not', ['dateAvailable' => null]])
@@ -93,7 +93,7 @@ class Lifecycle extends Component
         }
 
         $rows = (new Query())
-            ->select(['id', 'userId', 'storeId'])
+            ->select(['id', 'userId', 'storeId', 'orderId'])
             ->from(Table::LOTS)
             ->where(['status' => Lot::STATUS_PENDING, 'orderId' => $order->id])
             ->all();
@@ -341,7 +341,7 @@ class Lifecycle extends Component
     }
 
     /**
-     * @param array<int, array{id: int|string, userId: int|string, storeId: int|string}> $rows
+     * @param array<int, array{id: int|string, userId: int|string, storeId: int|string, orderId?: int|string|null}> $rows
      */
     private function _release(array $rows): int
     {
@@ -352,9 +352,12 @@ class Lifecycle extends Component
         $accounts = Plugin::getInstance()->getAccounts();
         $ids = array_map(static fn(array $row) => (int)$row['id'], $rows);
         $touched = [];
+        $arrivals = [];
 
         foreach ($rows as $row) {
             $touched[(int)$row['storeId'] . ':' . (int)$row['userId']] = [(int)$row['userId'], (int)$row['storeId']];
+            $orderId = !empty($row['orderId']) ? (int)$row['orderId'] : null;
+            $arrivals[(int)$row['storeId'] . ':' . (int)$row['userId'] . ':' . $orderId] = [(int)$row['userId'], (int)$row['storeId'], $orderId];
         }
 
         // The transaction ids are read *before* the lots move, so a concurrent sweep that has
@@ -383,10 +386,11 @@ class Lifecycle extends Component
         }
 
         // Released points are new spendable points, just as an earn is — and a hold is precisely
-        // the case where a balance crosses a threshold without a transaction being written.
-        foreach ($touched as [$userId, $storeId]) {
+        // the case where a balance crosses a threshold without a transaction being written. Each
+        // order's release is its own arrival, for rules that fire once per order.
+        foreach ($arrivals as [$userId, $storeId, $orderId]) {
             try {
-                Plugin::getInstance()->getRewards()->evaluateThresholds($userId, $storeId);
+                Plugin::getInstance()->getRewards()->evaluateThresholds($userId, $storeId, $orderId);
             } catch (\Throwable $e) {
                 Craft::error("Pointz could not evaluate thresholds for user $userId: " . $e->getMessage(), 'pointz');
             }

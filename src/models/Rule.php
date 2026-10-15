@@ -9,8 +9,10 @@ use craft\elements\conditions\users\UserCondition;
 use craft\elements\User;
 use craft\helpers\Json;
 use craft\helpers\StringHelper;
+use craft\helpers\UrlHelper;
 use craft\validators\HandleValidator;
 use craft\validators\UniqueValidator;
+use craft\web\twig\AllowedInSandbox;
 use DateTime;
 use justinholtweb\pointz\elements\conditions\orders\PointzOrderCondition;
 use justinholtweb\pointz\elements\conditions\purchasables\PointzPurchasableCondition;
@@ -69,7 +71,9 @@ class Rule extends Model
 
     public ?int $id = null;
     public ?int $storeId = null;
+    #[AllowedInSandbox]
     public string $name = '';
+    #[AllowedInSandbox]
     public string $handle = '';
     public bool $enabled = false;
     public ?int $sortOrder = null;
@@ -100,6 +104,15 @@ class Rule extends Model
     /** Whether a threshold rule spends the points it was triggered by. Off fires once, ever. */
     public bool $thresholdSpend = true;
 
+    /** Whether a spending threshold rule spends the customer's whole balance, not just the threshold. */
+    public bool $thresholdReset = false;
+
+    /**
+     * Whether a threshold rule fires at most once for the points one order brings in, however far
+     * past the threshold they take the balance. What is left over stays on the balance.
+     */
+    public bool $thresholdOncePerOrder = false;
+
     /** The handle of the user field a birthday rule reads. */
     public ?string $birthdayField = null;
 
@@ -109,6 +122,9 @@ class Rule extends Model
     /** Whether the reviewed entry has to be, or be related to, something the customer bought. */
     public bool $reviewPurchasedOnly = false;
 
+    /** Whether a review rule pays a customer once per reviewed entry, rather than once per review. */
+    public bool $reviewOncePerProduct = false;
+
     /** Whether a custom event for an email nobody has an account for creates an inactive one to pay. */
     public bool $createAccount = false;
 
@@ -116,6 +132,9 @@ class Rule extends Model
     public ?float $couponAmount = null;
     public ?int $couponValidDays = null;
     public ?int $couponRemindDays = null;
+
+    /** Reminders counted from the day a coupon is issued: "30, 60, 180, 365". */
+    public ?string $couponRemindAfterDays = null;
     public bool $couponNotify = false;
 
     /** The Commerce discount this rule's codes are issued against. Pointz creates and owns it. */
@@ -323,7 +342,7 @@ class Rule extends Model
             [['multiplier'], 'number', 'min' => 0],
             [['minAward', 'maxAward', 'maxPerUser'], 'number', 'min' => 0],
             [['expireAfterDays', 'couponValidDays', 'couponRemindDays'], 'integer', 'min' => 1],
-            [['enabled', 'firstOrderOnly', 'stopProcessing', 'thresholdSpend', 'reviewRequiresText', 'reviewPurchasedOnly', 'createAccount', 'couponNotify'], 'boolean'],
+            [['enabled', 'firstOrderOnly', 'stopProcessing', 'thresholdSpend', 'thresholdReset', 'thresholdOncePerOrder', 'reviewRequiresText', 'reviewPurchasedOnly', 'reviewOncePerProduct', 'createAccount', 'couponNotify'], 'boolean'],
             [['dateTo'], 'validateWindow'],
             [['maxAward'], 'validateAwardRange'],
             [['currency'], 'validateCurrency'],
@@ -333,7 +352,7 @@ class Rule extends Model
             [['thresholdPoints', 'couponAmount'], 'number', 'min' => 0.00001],
             [['couponType'], 'in', 'range' => array_keys(self::couponTypes())],
             [['eventHandle', 'thresholdPoints', 'birthdayField'], 'validateTrigger', 'skipOnEmpty' => false],
-            [['couponAmount', 'couponRemindDays'], 'validateCoupon', 'skipOnEmpty' => false],
+            [['couponAmount', 'couponRemindDays', 'couponRemindAfterDays'], 'validateCoupon', 'skipOnEmpty' => false],
             [['sortOrder', 'id', 'uid', 'dateFrom', 'dateCreated', 'dateUpdated', 'couponDiscountId'], 'safe'],
         ];
     }
@@ -430,6 +449,14 @@ class Rule extends Model
                 $this->addError($attribute, Craft::t('pointz', 'The reminder has to come before the coupon expires.'));
             }
         }
+
+        if ($attribute === 'couponRemindAfterDays' && $this->couponRemindAfterDays !== null) {
+            if (!preg_match('/^\s*\d+(\s*,\s*\d+)*\s*$/', $this->couponRemindAfterDays) || in_array(0, $this->getCouponRemindAfterDays(), true)) {
+                $this->addError($attribute, Craft::t('pointz', 'Whole numbers of days, separated by commas.'));
+            } elseif ($this->couponValidDays !== null && max($this->getCouponRemindAfterDays()) >= $this->couponValidDays) {
+                $this->addError($attribute, Craft::t('pointz', 'A reminder after the coupon has expired would never be sent.'));
+            }
+        }
     }
 
     public function validateAwardRange(string $attribute): void
@@ -465,14 +492,18 @@ class Rule extends Model
             'eventHandle' => Craft::t('pointz', 'Event handle'),
             'thresholdPoints' => Craft::t('pointz', 'Balance'),
             'thresholdSpend' => Craft::t('pointz', 'Spend the points'),
+            'thresholdReset' => Craft::t('pointz', 'Spend the whole balance'),
+            'thresholdOncePerOrder' => Craft::t('pointz', 'At most once per order'),
             'birthdayField' => Craft::t('pointz', 'Birthday field'),
             'reviewRequiresText' => Craft::t('pointz', 'Only reviews with written text'),
             'createAccount' => Craft::t('pointz', 'Pay people without an account'),
             'reviewPurchasedOnly' => Craft::t('pointz', 'Only products the customer bought'),
+            'reviewOncePerProduct' => Craft::t('pointz', 'Once per product'),
             'couponType' => Craft::t('pointz', 'Coupon'),
             'couponAmount' => Craft::t('pointz', 'Coupon value'),
             'couponValidDays' => Craft::t('pointz', 'Coupon valid for'),
             'couponRemindDays' => Craft::t('pointz', 'Remind before expiry'),
+            'couponRemindAfterDays' => Craft::t('pointz', 'Remind after issue'),
             'couponNotify' => Craft::t('pointz', 'Email the coupon'),
         ];
     }
@@ -556,6 +587,30 @@ class Rule extends Model
         $this->_purchasableCondition = $condition;
     }
 
+    /**
+     * The after-issue reminder offsets, in days, sorted and without repeats.
+     *
+     * @return int[]
+     */
+    public function getCouponRemindAfterDays(): array
+    {
+        return self::parseDays($this->couponRemindAfterDays);
+    }
+
+    /**
+     * "30, 60,180" as [30, 60, 180].
+     *
+     * @return int[]
+     */
+    public static function parseDays(?string $value): array
+    {
+        $days = array_map('intval', array_filter(array_map('trim', explode(',', (string)$value)), static fn(string $part) => ctype_digit($part)));
+        $days = array_values(array_unique($days));
+        sort($days);
+
+        return $days;
+    }
+
     public function awardsCoupon(): bool
     {
         return $this->currency === self::CURRENCY_COUPON;
@@ -564,6 +619,7 @@ class Rule extends Model
     /**
      * What one of this rule's coupons is worth, for the CP and for emails: "10%" or "€5.00".
      */
+    #[AllowedInSandbox]
     public function getCouponLabel(): string
     {
         return Coupon::formatValue($this->couponType, (float)$this->couponAmount, $this->storeId);
@@ -662,10 +718,10 @@ class Rule extends Model
         $store = Plugin::getInstance()->getRules()->getStoreHandle($this->storeId);
 
         if ($this->id === null) {
-            return sprintf('pointz/rules/%s/new', $store);
+            return UrlHelper::cpUrl(sprintf('pointz/rules/%s/new', $store));
         }
 
-        return sprintf('pointz/rules/%s/%s', $store, $this->id);
+        return UrlHelper::cpUrl(sprintf('pointz/rules/%s/%s', $store, $this->id));
     }
 
     /**

@@ -5,6 +5,7 @@ namespace justinholtweb\pointz\console\controllers;
 use craft\console\Controller;
 use craft\helpers\Console;
 use justinholtweb\pointz\errors\PointzException;
+use justinholtweb\pointz\models\Rule;
 use justinholtweb\pointz\Plugin;
 use yii\console\ExitCode;
 
@@ -37,6 +38,11 @@ class ImportController extends Controller
     public ?int $remindDays = null;
 
     /**
+     * @var string|null Remind a coupon's owner this many days after it was issued, as a list: `30,60,180,365`.
+     */
+    public ?string $remindAfter = null;
+
+    /**
      * @var bool Check every row and print what would happen, without writing anything.
      */
     public bool $dryRun = false;
@@ -47,7 +53,7 @@ class ImportController extends Controller
 
         return match ($actionID) {
             'balances' => array_merge($options, ['storeId', 'currency', 'note', 'dryRun']),
-            'coupons' => array_merge($options, ['remindDays', 'dryRun']),
+            'coupons' => array_merge($options, ['remindDays', 'remindAfter', 'dryRun']),
             default => $options,
         };
     }
@@ -93,7 +99,7 @@ class ImportController extends Controller
 
     /**
      * Outstanding coupons that already exist in Commerce. Columns: code, user, and optionally
-     * expires, issued, remind.
+     * expires, issued, remind. Codes that are used or expired don't hold a discount back.
      */
     public function actionCoupons(string $file): int
     {
@@ -101,6 +107,7 @@ class ImportController extends Controller
             $import = Plugin::getInstance()->getImport();
             $result = $import->importCoupons($import->readCsv($file), [
                 'remindDays' => $this->remindDays,
+                'remindAfter' => Rule::parseDays($this->remindAfter),
                 'dryRun' => $this->dryRun,
             ]);
         } catch (PointzException $e) {
@@ -114,6 +121,10 @@ class ImportController extends Controller
 
         if ($result['madeSingleUse']) {
             $this->stdout(($this->dryRun ? 'Would limit ' : 'Limited ') . "{$result['madeSingleUse']} code(s) with no use limit to a single use.\n");
+        }
+
+        if ($result['retired']) {
+            $this->stdout("{$result['retired']} used or expired code(s) on these discounts were left out and will not work once Pointz manages them.\n");
         }
 
         if ($result['discounts']) {

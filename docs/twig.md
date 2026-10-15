@@ -176,8 +176,10 @@ Event::on(
 ### Sending the coupon emails yourself
 
 `Coupons::EVENT_AFTER_ISSUE` fires after a coupon is issued. `Coupons::EVENT_BEFORE_REMIND` fires
-before its expiry reminder: set `isValid` to false and Pointz won't send its own email. The coupon
-is marked reminded either way, so the reminder goes out once.
+before each of its reminders; `$event->reminder` is `Coupon::REMIND_EXPIRY` or
+`Coupon::REMIND_ISSUED` (one counted from the issue date). Set `isValid` to false and Pointz won't
+send its own email. The coupon is marked reminded either way, so each reminder goes out once. If
+Pointz's own email fails to send, the reminder is tried again on the next sweep.
 
 ```php
 use justinholtweb\pointz\events\CouponEvent;

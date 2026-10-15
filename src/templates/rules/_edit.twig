@@ -89,8 +89,27 @@
                 instructions: "On: the balance pays for the reward and starts again, so the rule fires every time it is reached. Off: the balance is left alone and the rule fires once per customer, ever. For tiers, put the higher rule first and switch on “stop after this one”."|t('pointz'),
                 id: 'thresholdSpend',
                 name: 'thresholdSpend',
-                on: rule.thresholdSpend
+                on: rule.thresholdSpend,
+                reveal: 'threshold-spend-options'
             }) }}
+
+            <div id="threshold-spend-options"{% if not rule.thresholdSpend %} class="hidden"{% endif %}>
+                {{ forms.lightswitchField({
+                    label: "Spend the whole balance"|t('pointz'),
+                    instructions: "Takes everything the customer has, not just the threshold, so the balance starts again from zero."|t('pointz'),
+                    id: 'thresholdReset',
+                    name: 'thresholdReset',
+                    on: rule.thresholdReset
+                }) }}
+
+                {{ forms.lightswitchField({
+                    label: "At most once per order"|t('pointz'),
+                    instructions: "One big order pays one reward and leaves the rest on the balance, rather than paying the threshold over and over. Points that aren't from an order pay at most one reward each time they arrive."|t('pointz'),
+                    id: 'thresholdOncePerOrder',
+                    name: 'thresholdOncePerOrder',
+                    on: rule.thresholdOncePerOrder
+                }) }}
+            </div>
         </div>
 
         <div data-events="birthday">
@@ -124,6 +143,14 @@
                 id: 'reviewPurchasedOnly',
                 name: 'reviewPurchasedOnly',
                 on: rule.reviewPurchasedOnly
+            }) }}
+
+            {{ forms.lightswitchField({
+                label: "Once per product"|t('pointz'),
+                instructions: "Pays a customer once for each product they review. Off, every approved review pays, including a second review of the same product."|t('pointz'),
+                id: 'reviewOncePerProduct',
+                name: 'reviewOncePerProduct',
+                on: rule.reviewOncePerProduct
             }) }}
         </div>
 
@@ -194,9 +221,21 @@
                 errors: rule.getErrors('couponRemindDays')
             }) }}
 
+            {{ forms.textField({
+                label: "Remind after issue"|t('pointz'),
+                instructions: "Emails the customer this many days after the coupon was issued, while it's still unused — for a coupon that never expires, say. Several are fine: `30, 60, 180, 365`. Sent by `pointz/sweep/run`."|t('pointz'),
+                id: 'couponRemindAfterDays',
+                name: 'couponRemindAfterDays',
+                value: rule.couponRemindAfterDays,
+                placeholder: '30, 60, 180, 365',
+                size: 20,
+                unit: "days"|t('pointz'),
+                errors: rule.getErrors('couponRemindAfterDays')
+            }) }}
+
             {{ forms.lightswitchField({
                 label: "Email the coupon"|t('pointz'),
-                instructions: "Sends the code when it is issued. Both emails are edited under Utilities → System Messages."|t('pointz'),
+                instructions: "Sends the code when it is issued. All three emails are edited under Utilities → System Messages."|t('pointz'),
                 id: 'couponNotify',
                 name: 'couponNotify',
                 on: rule.couponNotify

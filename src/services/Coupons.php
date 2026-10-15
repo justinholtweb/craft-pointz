@@ -10,11 +10,14 @@ use craft\commerce\elements\Order;
 use craft\commerce\events\MatchOrderEvent;
 use craft\commerce\models\Coupon as CommerceCoupon;
 use craft\commerce\models\Discount;
+use craft\commerce\models\OrderNotice;
 use craft\commerce\Plugin as Commerce;
 use craft\commerce\records\Discount as DiscountRecord;
 use craft\db\Query;
 use craft\elements\User;
+use craft\helpers\DateTimeHelper;
 use craft\helpers\Db;
+use craft\helpers\Json;
 use craft\helpers\StringHelper;
 use DateInterval;
 use DateTime;
@@ -25,6 +28,7 @@ use justinholtweb\pointz\events\CouponEvent;
 use justinholtweb\pointz\models\Coupon;
 use justinholtweb\pointz\models\Rule;
 use justinholtweb\pointz\Plugin;
+use yii\db\Expression;
 
 /**
  * Coupons as a reward: one Commerce discount per rule, one single-use code per customer.
@@ -47,13 +51,15 @@ class Coupons extends Component
     public const EVENT_AFTER_ISSUE = 'afterIssue';
 
     /**
-     * @event CouponEvent Raised before an expiry reminder is sent. Set `isValid` to false to send
-     *                    it yourself; the coupon is marked reminded either way.
+     * @event CouponEvent Raised before a reminder is sent — before expiry, or after issue, as
+     *                    `reminder` says. Set `isValid` to false to send it yourself; the coupon is
+     *                    marked reminded either way.
      */
     public const EVENT_BEFORE_REMIND = 'beforeRemind';
 
     public const MESSAGE_ISSUED = 'pointz_coupon_issued';
     public const MESSAGE_EXPIRING = 'pointz_coupon_expiring';
+    public const MESSAGE_UNUSED = 'pointz_coupon_unused';
 
     /**
      * No 0/O or 1/I/L: these get read off a screen and typed into a checkout.
@@ -165,12 +171,15 @@ class Coupons extends Component
             throw new PointzException('Could not add the coupon code: ' . json_encode($commerceCoupon->getErrors()));
         }
 
+        $issued = $this->now();
         $dateExpires = $rule->couponValidDays
-            ? $this->now()->add(new DateInterval("P{$rule->couponValidDays}D"))
+            ? (clone $issued)->add(new DateInterval("P{$rule->couponValidDays}D"))
             : null;
-        $dateRemind = ($dateExpires && $rule->couponRemindDays)
+        $expiryReminder = ($dateExpires && $rule->couponRemindDays)
             ? (clone $dateExpires)->sub(new DateInterval("P{$rule->couponRemindDays}D"))
             : null;
+        $reminders = $this->reminderSchedule($issued, $dateExpires, $expiryReminder, $rule->getCouponRemindAfterDays());
+        $dateRemind = $reminders ? DateTimeHelper::toDateTime($reminders[0]['date']) : null;
 
         $coupon = new Coupon([
             'storeId' => $storeId,
@@ -186,6 +195,7 @@ class Coupons extends Component
             'reference' => $options['reference'] ?? null,
             'dateExpires' => $dateExpires,
             'dateRemind' => $dateRemind,
+            'reminders' => $reminders ?: null,
         ]);
 
         $now = Db::prepareDateForDb(new DateTime('now', new DateTimeZone('UTC')));
@@ -205,6 +215,7 @@ class Coupons extends Component
             'reference' => $coupon->reference,
             'dateExpires' => $dateExpires ? Db::prepareDateForDb($dateExpires) : null,
             'dateRemind' => $dateRemind ? Db::prepareDateForDb($dateRemind) : null,
+            'reminders' => $reminders ? Json::encode($reminders) : null,
             'dateCreated' => $now,
             'dateUpdated' => $now,
             'uid' => $coupon->uid,
@@ -248,23 +259,80 @@ class Coupons extends Component
 
         $coupon = $order->couponCode ? $this->getCouponByCode($order->couponCode) : null;
 
-        if ($coupon === null || $coupon->discountId !== $discount->id || $coupon->userId !== $order->getCustomerId()) {
+        if ($coupon === null || $coupon->discountId !== $discount->id || !$this->_isLiveFor($coupon, $order)) {
             $event->isValid = false;
+        }
+    }
 
+    /**
+     * Why the order's coupon code can't be used on it, when the code is a Pointz one — or null
+     * when it can, or isn't Pointz's to judge.
+     *
+     * `enforceOwnership()` already stops the discount, but Commerce's own check that a code is
+     * available (`orderCouponAvailable()`) never asks the discount whether it matches. Without
+     * this, someone else's code would sit on the cart taking nothing off, with no word to the
+     * customer about why.
+     */
+    public function getCouponCodeError(Order $order): ?string
+    {
+        if (!$order->couponCode || $order->isCompleted || !Plugin::commerceIsReady()) {
+            return null;
+        }
+
+        $coupon = $this->getCouponByCode($order->couponCode);
+
+        if ($coupon === null) {
+            // A code on a discount Pointz manages that Pointz has no record of — a dead code left
+            // on a discount an import took over — can never pass the ownership check.
+            $discountId = (new Query())
+                ->select(['discountId'])
+                ->from(CommerceTable::COUPONS)
+                ->where(new Expression('LOWER([[code]]) = :code', [':code' => strtolower(trim($order->couponCode))]))
+                ->scalar();
+
+            return $discountId && in_array((int)$discountId, $this->getManagedDiscountIds(), true)
+                ? Craft::t('commerce', 'Coupon not valid.')
+                : null;
+        }
+
+        if ($coupon->userId !== $order->getCustomerId() || $coupon->status !== Coupon::STATUS_ACTIVE || $coupon->couponId === null) {
+            return Craft::t('commerce', 'Coupon not valid.');
+        }
+
+        if (!$coupon->getIsUsable()) {
+            return Craft::t('commerce', 'Discount is out of date.');
+        }
+
+        return null;
+    }
+
+    /**
+     * The order validator behind `getCouponCodeError()`, which does what Commerce does with a code
+     * that isn't valid: a notice on the cart, and the code taken off it.
+     */
+    public function validateCouponCode(Order $order, string $attribute = 'couponCode'): void
+    {
+        $recalculates = in_array($order->getRecalculationMode(), [Order::RECALCULATION_MODE_ALL, Order::RECALCULATION_MODE_ADJUSTMENTS_ONLY], true);
+
+        if (!$recalculates) {
             return;
         }
 
-        // A completed order is judged as of the moment it was placed, and a code it has already
-        // used is still its own.
-        if ($coupon->status === Coupon::STATUS_USED && $coupon->orderId === $order->id) {
+        $explanation = $this->getCouponCodeError($order);
+
+        if ($explanation === null) {
             return;
         }
 
-        $when = ($order->isCompleted && $order->dateOrdered) ? $order->dateOrdered : new DateTime();
-
-        if (!$coupon->getIsUsable($when)) {
-            $event->isValid = false;
-        }
+        $order->addNotice(Craft::createObject([
+            'class' => OrderNotice::class,
+            'attributes' => [
+                'type' => 'invalidCouponRemoved',
+                'attribute' => $attribute,
+                'message' => Craft::t('commerce', 'Coupon removed: {explanation}', ['explanation' => $explanation]),
+            ],
+        ]));
+        $order->$attribute = null;
     }
 
     /**
@@ -358,21 +426,27 @@ class Coupons extends Component
     }
 
     /**
-     * Sends the expiry reminders that are due. A reminder is stamped as sent whether Pointz sent
-     * it or a handler took it over, so it goes out once.
+     * Sends the reminders that are due: before a code expires, and at the offsets after issue its
+     * rule (or its import) gave it. A reminder is stamped as sent whether Pointz sent it or a
+     * handler took it over, so it goes out once — and one that fails to send is put back, so the
+     * next sweep tries again.
      *
-     * @return int How many reminders were due.
+     * A sweep that has missed several of a code's reminders sends the latest of them, not all of
+     * them in a row.
+     *
+     * @return int How many reminders went out.
      */
     public function remindDue(?int $limit = null): int
     {
         $limit ??= Plugin::getInstance()->getSettings()->sweepBatchSize;
         $now = new DateTime();
+        $nowDb = Db::prepareDateForDb($now);
 
         $rows = $this->_query()
-            ->where(['status' => Coupon::STATUS_ACTIVE, 'dateReminded' => null])
+            ->where(['status' => Coupon::STATUS_ACTIVE])
             ->andWhere(['not', ['dateRemind' => null]])
-            ->andWhere(['<=', 'dateRemind', Db::prepareDateForDb($now)])
-            ->andWhere(['>', 'dateExpires', Db::prepareDateForDb($now)])
+            ->andWhere(['<=', 'dateRemind', $nowDb])
+            ->andWhere(['or', ['dateExpires' => null], ['>', 'dateExpires', $nowDb]])
             ->limit($limit)
             ->all();
 
@@ -380,11 +454,26 @@ class Coupons extends Component
 
         foreach ($rows as $row) {
             $coupon = new Coupon($row);
+            $kind = Coupon::REMIND_EXPIRY;
+            $next = null;
 
-            // Claim it first: two overlapping sweeps must not both send.
-            $claimed = Db::update(Table::COUPONS, [
-                'dateReminded' => Db::prepareDateForDb(new DateTime('now', new DateTimeZone('UTC'))),
-            ], ['id' => $coupon->id, 'dateReminded' => null]);
+            foreach ($coupon->getReminderSchedule() as $reminder) {
+                if ($reminder['date'] <= $now) {
+                    $kind = $reminder['kind'];
+                } else {
+                    $next = $reminder['date'];
+                    break;
+                }
+            }
+
+            $nextDb = $next ? Db::prepareDateForDb($next) : null;
+
+            // Claim it first, by moving it on to the next reminder: two overlapping sweeps must
+            // not both send.
+            $claimed = Db::update(Table::COUPONS, ['dateRemind' => $nextDb], [
+                'id' => $coupon->id,
+                'dateRemind' => $row['dateRemind'],
+            ]);
 
             if (!$claimed) {
                 continue;
@@ -392,20 +481,75 @@ class Coupons extends Component
 
             $user = $coupon->getUser();
             $rule = $coupon->getRule();
-            $event = new CouponEvent(['coupon' => $coupon, 'user' => $user, 'rule' => $rule]);
+            $event = new CouponEvent(['coupon' => $coupon, 'user' => $user, 'rule' => $rule, 'reminder' => $kind]);
 
             if ($this->hasEventHandlers(self::EVENT_BEFORE_REMIND)) {
                 $this->trigger(self::EVENT_BEFORE_REMIND, $event);
             }
 
+            $sent = true;
+
             if ($event->isValid && $user !== null) {
-                $this->_send(self::MESSAGE_EXPIRING, $coupon, $user, $rule);
+                $key = ($kind === Coupon::REMIND_EXPIRY && $coupon->dateExpires) ? self::MESSAGE_EXPIRING : self::MESSAGE_UNUSED;
+                $sent = $this->_send($key, $coupon, $user, $rule);
             }
+
+            if (!$sent) {
+                // Give the claim back, unless another sweep has moved the coupon on since.
+                Db::update(Table::COUPONS, ['dateRemind' => $row['dateRemind']], [
+                    'id' => $coupon->id,
+                    'dateRemind' => $nextDb,
+                ]);
+                continue;
+            }
+
+            Db::update(Table::COUPONS, [
+                'dateReminded' => Db::prepareDateForDb(new DateTime('now', new DateTimeZone('UTC'))),
+            ], ['id' => $coupon->id]);
 
             $count++;
         }
 
         return $count;
+    }
+
+    /**
+     * A coupon's reminders, as stored: one `expiryReminder` if there is one, and one for each
+     * offset in `afterDays` counted from `issued`, dropping any that would land on or after the
+     * expiry. With `after`, reminders after issue that fall before it are left out too — an
+     * imported code issued two years ago is not owed its 30-day reminder today.
+     *
+     * @param int[] $afterDays
+     * @return array<int, array{date: string, kind: string}> Oldest first, dates in UTC.
+     */
+    public function reminderSchedule(DateTime $issued, ?DateTime $expires, ?DateTime $expiryReminder, array $afterDays, ?DateTime $after = null): array
+    {
+        $dates = [];
+
+        foreach ($afterDays as $days) {
+            if ($days < 1) {
+                continue;
+            }
+
+            $date = (clone $issued)->add(new DateInterval("P{$days}D"));
+
+            if (($expires && $date >= $expires) || ($after && $date <= $after)) {
+                continue;
+            }
+
+            $dates[] = ['date' => $date, 'kind' => Coupon::REMIND_ISSUED];
+        }
+
+        if ($expiryReminder && (!$expires || $expiryReminder < $expires)) {
+            $dates[] = ['date' => $expiryReminder, 'kind' => Coupon::REMIND_EXPIRY];
+        }
+
+        usort($dates, static fn(array $a, array $b) => $a['date'] <=> $b['date']);
+
+        return array_map(static fn(array $reminder) => [
+            'date' => Db::prepareDateForDb($reminder['date']),
+            'kind' => $reminder['kind'],
+        ], $dates);
     }
 
     /**
@@ -599,7 +743,7 @@ class Coupons extends Component
     }
 
     /**
-     * The two system messages, registered with Craft so they are edited under Utilities → System
+     * The three system messages, registered with Craft so they are edited under Utilities → System
      * Messages like Craft's own.
      *
      * @return array<int, array{key: string, heading: string, subject: string, body: string}>
@@ -619,12 +763,37 @@ class Coupons extends Component
                 'subject' => Craft::t('pointz', 'Your {{ value }} coupon expires soon'),
                 'body' => Craft::t('pointz', "Hi {{ user.friendlyName }},\n\nA reminder that your {{ value }} coupon **{{ coupon.code }}** expires on {{ coupon.dateExpires|date('long') }}.\n\nEnter it at checkout before then."),
             ],
+            [
+                'key' => self::MESSAGE_UNUSED,
+                'heading' => Craft::t('pointz', 'When a Pointz coupon is still unused'),
+                'subject' => Craft::t('pointz', 'Your {{ value }} coupon is waiting'),
+                'body' => Craft::t('pointz', "Hi {{ user.friendlyName }},\n\nYou still have a {{ value }} coupon you haven't used: **{{ coupon.code }}**\n\nEnter it at checkout.{% if coupon.dateExpires %} It can be used until {{ coupon.dateExpires|date('long') }}.{% endif %}"),
+            ],
         ];
     }
 
     public function now(): DateTime
     {
         return new DateTime('now', new DateTimeZone(Craft::$app->getTimeZone()));
+    }
+
+    /**
+     * Whether a code belongs to the order's customer and can be used on it. A completed order is
+     * judged as of the moment it was placed, and a code it has already used is still its own.
+     */
+    private function _isLiveFor(Coupon $coupon, Order $order): bool
+    {
+        if ($coupon->userId !== $order->getCustomerId()) {
+            return false;
+        }
+
+        if ($coupon->status === Coupon::STATUS_USED && $coupon->orderId === $order->id) {
+            return true;
+        }
+
+        $when = ($order->isCompleted && $order->dateOrdered) ? $order->dateOrdered : new DateTime();
+
+        return $coupon->getIsUsable($when);
     }
 
     private function _discountMatches(Discount $discount, Rule $rule): bool
@@ -647,14 +816,18 @@ class Coupons extends Component
         Commerce::getInstance()->getCoupons()->deleteCouponById($couponId);
     }
 
-    private function _send(string $key, Coupon $coupon, User $user, ?Rule $rule): void
+    /**
+     * @return bool False when the email should have gone and didn't. A customer with no email
+     *              address has nothing to retry, so that counts as done.
+     */
+    private function _send(string $key, Coupon $coupon, User $user, ?Rule $rule): bool
     {
         if (!$user->email) {
-            return;
+            return true;
         }
 
         try {
-            Craft::$app->getMailer()
+            $sent = Craft::$app->getMailer()
                 ->composeFromKey($key, [
                     'user' => $user,
                     'coupon' => $coupon,
@@ -667,7 +840,15 @@ class Coupons extends Component
             // An email that fails must not take the coupon with it — the code is issued and
             // recorded, and the customer can still see it on their account page.
             Craft::error("Pointz could not send $key for coupon {$coupon->id}: " . $e->getMessage(), 'pointz');
+
+            return false;
         }
+
+        if (!$sent) {
+            Craft::error("Pointz could not send $key for coupon {$coupon->id}: the mailer refused it.", 'pointz');
+        }
+
+        return $sent;
     }
 
     private function _query(): Query
@@ -690,6 +871,8 @@ class Coupons extends Component
                 'dateExpires',
                 'dateRemind',
                 'dateReminded',
+                'reminders',
+                'madeSingleUse',
                 'dateUsed',
                 'dateCreated',
                 'dateUpdated',

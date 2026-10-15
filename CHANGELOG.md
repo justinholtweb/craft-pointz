@@ -1,5 +1,42 @@
 # Release Notes for Pointz
 
+## 5.3.0 - 2026-10-15
+
+### Added
+
+- **Remind after issue** on coupon rules *(Pro)*: reminders a list of days after a coupon was
+  issued (`30, 60, 180, 365`), while it is still unused — including for coupons that never expire.
+  A new system message, *When a Pointz coupon is still unused*, carries them. A sweep that has
+  missed several of a code's reminders sends one.
+- `--remind-after` on `pointz/import/coupons`, counted from each row's `issued` date. Offsets that
+  have already passed are dropped.
+- **At most once per order** on threshold rules: one order pays one reward, however far past the
+  threshold it takes the balance, and the rest stays on the balance.
+- **Spend the whole balance** on threshold rules, which resets the balance to zero for the reward.
+- **Once per product** on review rules: one payment per customer per reviewed product, rather than
+  one per review.
+- `CouponEvent::$reminder`, saying which reminder `Coupons::EVENT_BEFORE_REMIND` is for.
+- `Coupons::getCouponCodeError()`, `Coupons::reminderSchedule()`, `Rewards::hasFiredForOrder()`.
+
+### Changed
+
+- `pointz/import/coupons` no longer refuses a discount because of codes that can't be used: codes
+  Commerce says are used up, and codes the file lists as used or past their expiry. It reports how
+  many it left behind.
+- `pointz/import/revert` lifts the single-use limit the import put on codes that had none.
+
+### Fixed
+
+- Someone else's Pointz code, or an expired one, stayed on a cart silently while taking nothing
+  off. It is now removed with Commerce's "Coupon removed: Coupon not valid." notice, as a used code
+  is.
+- A coupon reminder that failed to send was marked sent and never retried. It is now retried on the
+  next sweep.
+- The coupon emails threw under Craft's Twig sandbox (`enableTwigSandbox`). The properties and
+  getters they read are now marked `#[AllowedInSandbox]`.
+- Rule links on the rules index went to a 404: `Rule::getCpEditUrl()` returned a path rather than
+  a control panel URL.
+
 ## 5.2.0 - 2026-10-09
 ### Added
 

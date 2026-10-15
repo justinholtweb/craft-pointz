@@ -13,6 +13,7 @@ use craft\helpers\DateTimeHelper;
 use DateInterval;
 use DateTime;
 use DateTimeZone;
+use justinholtweb\pointz\db\Table;
 use justinholtweb\pointz\errors\PointzException;
 use justinholtweb\pointz\events\RewardEvent;
 use justinholtweb\pointz\models\Coupon;
@@ -132,10 +133,12 @@ class Rewards extends Component
     /**
      * Runs every active rule for a trigger, in precedence order.
      *
+     * @param string|\Closure(Rule): ?string|null $reference What a rule pays once for — the same
+     *        for every rule, or worked out per rule.
      * @param callable(Rule): bool|null $filter Which of the trigger's rules apply this time.
      * @return array<int, Transaction|Coupon>
      */
-    public function awardForEvent(string $event, User $user, int $storeId, ?string $reference = null, array $context = [], bool $firstOnly = false, ?callable $filter = null): array
+    public function awardForEvent(string $event, User $user, int $storeId, string|\Closure|null $reference = null, array $context = [], bool $firstOnly = false, ?callable $filter = null): array
     {
         if (!Plugin::getInstance()->getSettings()->earningEnabled) {
             return [];
@@ -148,7 +151,7 @@ class Rewards extends Component
                 continue;
             }
 
-            $result = $this->grant($rule, $user, $storeId, $reference, $context, [
+            $result = $this->grant($rule, $user, $storeId, $reference instanceof \Closure ? $reference($rule) : $reference, $context, [
                 'note' => $this->_noteFor($event, $rule),
             ]);
 
@@ -250,11 +253,17 @@ class Rewards extends Component
         $hasText = trim((string)($review->reviewText ?? '')) !== '';
         $entryId = isset($review->entryId) ? (int)$review->entryId : null;
 
+        // Once per review, or once per reviewed entry — so a second review of the same product
+        // pays nothing on a rule that says so.
+        $reference = static fn(Rule $rule) => $rule->reviewOncePerProduct && $entryId
+            ? 'stars:entry:' . $entryId
+            : 'stars:review:' . $review->id;
+
         return $this->awardForEvent(
             Rule::EVENT_REVIEW,
             $user,
             $storeId,
-            'stars:review:' . $review->id,
+            $reference,
             ['review' => $review],
             false,
             function(Rule $rule) use ($hasText, $entryId, $user, $storeId) {
@@ -415,13 +424,16 @@ class Rewards extends Component
      * Fires the threshold rules a customer's points balance now satisfies.
      *
      * A spending rule takes the threshold out of the balance with an ordinary ledger debit and pays
-     * the reward against it; if the reward cannot be made, the debit is restored. A non-spending
-     * rule fires once per customer, ever. Rules run in precedence order, so a 100-point rule above
-     * a 50-point rule — with "stop after this one" — is how tiers are written.
+     * the reward against it; if the reward cannot be made, the debit is restored. It fires as many
+     * times as the balance allows, unless it fires *at most once per order*, or spends the whole
+     * balance. A non-spending rule fires once per customer, ever. Rules run in precedence order, so
+     * a 100-point rule above a 50-point rule — with "stop after this one" — is how tiers are
+     * written.
      *
+     * @param int|null $orderId The order the points that just arrived came from, if any.
      * @return array<int, Transaction|Coupon>
      */
-    public function evaluateThresholds(int $userId, int $storeId): array
+    public function evaluateThresholds(int $userId, int $storeId, ?int $orderId = null): array
     {
         if (!Plugin::getInstance()->isPro()) {
             return [];
@@ -454,7 +466,7 @@ class Rewards extends Component
         try {
             foreach ($rules as $rule) {
                 $fired = $rule->thresholdSpend
-                    ? $this->_fireSpendingThreshold($rule, $user, $storeId)
+                    ? $this->_fireSpendingThreshold($rule, $user, $storeId, $orderId)
                     : $this->_fireOnceThreshold($rule, $user, $storeId);
 
                 array_push($results, ...$fired);
@@ -497,9 +509,30 @@ class Rewards extends Component
     }
 
     /**
+     * Whether a threshold rule has already paid out for the points an order brought in. A spend
+     * that was restored because its reward failed doesn't count.
+     */
+    public function hasFiredForOrder(Rule $rule, int $userId, int $orderId): bool
+    {
+        return (new Query())
+            ->from(['t' => Table::TRANSACTIONS])
+            ->where([
+                't.userId' => $userId,
+                't.ruleId' => $rule->id,
+                't.kind' => Transaction::KIND_REWARD,
+                't.reference' => 'order:' . $orderId,
+            ])
+            ->andWhere(['not exists', (new Query())
+                ->from(['r' => Table::TRANSACTIONS])
+                ->where('[[r.reversesId]] = [[t.id]]'),
+            ])
+            ->exists();
+    }
+
+    /**
      * @return array<int, Transaction|Coupon>
      */
-    private function _fireSpendingThreshold(Rule $rule, User $user, int $storeId): array
+    private function _fireSpendingThreshold(Rule $rule, User $user, int $storeId, ?int $orderId = null): array
     {
         $results = [];
         $threshold = (float)$rule->thresholdPoints;
@@ -508,8 +541,20 @@ class Rewards extends Component
             return [];
         }
 
-        for ($i = 0; $i < self::THRESHOLD_MAX_REPEATS; $i++) {
-            if ($this->_pointsBalance($user->id, $storeId) + 0.00001 < $threshold) {
+        // Once per order means once for this arrival, and not again for a later arrival from the
+        // same order — a second earning rule's credit, or its held points being released. What
+        // is left over stays on the balance for the next order. Spending the whole balance can
+        // only happen once anyway.
+        $repeats = ($rule->thresholdOncePerOrder || $rule->thresholdReset) ? 1 : self::THRESHOLD_MAX_REPEATS;
+
+        if ($rule->thresholdOncePerOrder && $orderId !== null && $this->hasFiredForOrder($rule, $user->id, $orderId)) {
+            return [];
+        }
+
+        for ($i = 0; $i < $repeats; $i++) {
+            $balance = $this->_pointsBalance($user->id, $storeId);
+
+            if ($balance + 0.00001 < $threshold) {
                 break;
             }
 
@@ -530,9 +575,11 @@ class Rewards extends Component
             $ledger = Plugin::getInstance()->getLedger();
 
             try {
-                $spend = $ledger->debit($user->id, $storeId, Rule::CURRENCY_POINTS, $threshold, [
+                // Not `orderId`: a refund hands back what its order spent, and this isn't that.
+                $spend = $ledger->debit($user->id, $storeId, Rule::CURRENCY_POINTS, $rule->thresholdReset ? $balance : $threshold, [
                     'kind' => Transaction::KIND_REWARD,
                     'ruleId' => $rule->id,
+                    'reference' => ($rule->thresholdOncePerOrder && $orderId !== null) ? 'order:' . $orderId : null,
                     'note' => Craft::t('pointz', 'Exchanged for: {rule}', ['rule' => $rule->name]),
                 ]);
             } catch (PointzException) {
