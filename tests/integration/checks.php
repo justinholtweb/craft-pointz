@@ -2033,6 +2033,42 @@ try {
             ?: json_encode(['paid' => $paid, 'again' => $again, 'due' => count($dueCoupons), 'later' => count($laterCoupons), 'leap' => $leap]);
     });
 
+    check('a late-December birthday missed by the sweep is still paid in January, against last year', function() use ($rewards, $couponsService) {
+        $field = 'mzPromoCity';
+
+        if (Craft::$app->getFields()->getFieldByHandle($field) === null) {
+            return true;
+        }
+
+        $rule = makeRule('birthdayNewYear', [
+            'event' => Rule::EVENT_BIRTHDAY,
+            'birthdayField' => $field,
+            'currency' => Rule::CURRENCY_COUPON,
+            'couponAmount' => 14.99,
+            'couponValidDays' => 90,
+        ]);
+        onlyRules([$rule]);
+
+        $today = new DateTime('2027-01-02', new DateTimeZone(Craft::$app->getTimeZone()));
+        $missed = makeUser('birthdayMissed');
+        $missed->setFieldValue($field, '1990-12-30');
+        Craft::$app->getElements()->saveElement($missed);
+        $tooLate = makeUser('birthdayTooLate');
+        $tooLate->setFieldValue($field, '1990-12-26');
+        Craft::$app->getElements()->saveElement($tooLate);
+
+        $paid = $rewards->runBirthdays($today);
+        $again = $rewards->runBirthdays($today);
+        $leap = $rewards->lastBirthday('2000-02-29', new DateTime('2025-01-01'))?->format('Y-m-d');
+
+        $missedCoupons = $couponsService->getCoupons(['userId' => $missed->id]);
+        $tooLateCoupons = $couponsService->getCoupons(['userId' => $tooLate->id]);
+
+        return $paid === 1 && $again === 0 && count($missedCoupons) === 1 && $tooLateCoupons === []
+            && $missedCoupons[0]->reference === 'birthday:2026' && $leap === '2024-02-29'
+            ?: json_encode(['paid' => $paid, 'again' => $again, 'missed' => array_map(fn($c) => $c->reference, $missedCoupons), 'tooLate' => count($tooLateCoupons), 'leap' => $leap]);
+    });
+
 
     section('Import');
 

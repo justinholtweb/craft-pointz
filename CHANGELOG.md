@@ -1,5 +1,14 @@
 # Release Notes for Pointz
 
+## 5.3.1 - 2026-10-15
+
+### Fixed
+
+- A birthday reward missed by the sweep across New Year is now paid within the grace period,
+  against last year: a 30 December birthday swept on 2 January was skipped as next December's.
+  `Rewards::lastBirthday()` returns the most recent occurrence on or before a date.
+  ([#2](https://github.com/justinholtweb/craft-pointz/issues/2))
+
 ## 5.3.0 - 2026-10-15
 
 ### Added

@@ -229,7 +229,7 @@ No local PHP on this Mac. Everything runs inside the plugin-testing container:
 
 ```sh
 docker exec -w /var/www/html ddev-plugin-testing-web \
-  php /var/www/craft-pointz/tests/integration/checks.php          # 114 checks
+  php /var/www/craft-pointz/tests/integration/checks.php          # 115 checks
 docker exec -w /var/www/html ddev-plugin-testing-web \
   php /var/www/craft-pointz/tests/integration/security.php        # 11, a guest vs the signed-in customer over HTTP
 docker exec -w /var/www/html ddev-plugin-testing-web \

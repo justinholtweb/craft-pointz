@@ -362,9 +362,9 @@ class Rewards extends Component
 
                 foreach ($query->each(200) as $user) {
                     /** @var User $user */
-                    $birthday = $this->birthdayThisYear($user->getFieldValue($field), $today);
+                    $birthday = $this->lastBirthday($user->getFieldValue($field), $today);
 
-                    if ($birthday === null || $birthday > $today) {
+                    if ($birthday === null) {
                         continue;
                     }
 
@@ -402,6 +402,28 @@ class Rewards extends Component
      */
     public function birthdayThisYear(mixed $value, DateTime $today): ?DateTime
     {
+        return $this->_birthdayIn($value, $today, (int)$today->format('Y'));
+    }
+
+    /**
+     * The most recent occurrence of a birthday on or before today: this year's if it has come,
+     * otherwise last year's. That is what lets the grace period reach back across New Year, so a
+     * 30 December birthday missed by the sweep is still paid on 2 January, against last year.
+     */
+    public function lastBirthday(mixed $value, DateTime $today): ?DateTime
+    {
+        $today = (clone $today)->setTime(0, 0);
+        $birthday = $this->birthdayThisYear($value, $today);
+
+        if ($birthday !== null && $birthday > $today) {
+            $birthday = $this->_birthdayIn($value, $today, (int)$today->format('Y') - 1);
+        }
+
+        return $birthday;
+    }
+
+    private function _birthdayIn(mixed $value, DateTime $today, int $year): ?DateTime
+    {
         $date = $value instanceof \DateTimeInterface ? $value : DateTimeHelper::toDateTime($value, true);
 
         if (!$date) {
@@ -409,7 +431,6 @@ class Rewards extends Component
         }
 
         $date = DateTime::createFromInterface($date)->setTimezone($today->getTimezone());
-        $year = (int)$today->format('Y');
         $month = (int)$date->format('n');
         $day = (int)$date->format('j');
 
