@@ -1,5 +1,39 @@
 # Release Notes for Pointz
 
+## 5.4.0 - 2026-11-03
+
+### Added
+
+- **Pointz → Coupons** *(Pro)*: every code Pointz has issued or taken over, across customers, with
+  its owner, rule, value, dates, status and the order a used code went on. Search by part of a
+  code or of a customer's email; filter by status, rule and store; revoke a live code from the
+  list. Above it, codes issued and used per rule, this month and overall.
+  ([#1](https://github.com/justinholtweb/craft-pointz/issues/1))
+- **Send a test** on coupon rules: sends the issued, expiring and still-unused emails to an address
+  you type, in the language you pick, with a sample code. Nothing is issued.
+- Campaign signups as a custom event: `campaign:<list slug>` pays when a subscription goes through
+  from the site, which on a list that requires verification is the double opt-in. Hooked by class
+  name, like Formie and Dispatch.
+- A `remindAfter` column on `pointz/import/coupons`, which replaces `--remind-after` for that row
+  (`0` for none), so a file mixing kinds of code doesn't have to be split.
+- `craft.pointz.couponError(code, cart)`, which says whether a code can be used on a cart before it
+  is applied — Commerce's checks and Pointz's together. Commerce's `orderCouponAvailable()` alone
+  calls someone else's Pointz code valid until the cart is saved.
+- `Coupons::getCouponsQuery()`, `Coupons::getSummary()`, `Coupons::sendTest()`, and an optional
+  `$code` on `Coupons::getCouponCodeError()`.
+
+### Changed
+
+- Lists of days (`Remind after issue`, `--remind-after`) also accept semicolons, bars and spaces
+  as separators.
+
+### Fixed
+
+- Reviews imported into Stars (`stars/import/comments`, Stars 5.3+) never earn the review reward,
+  at import or on any later save: the customer was rewarded where the review was first written.
+  Stars 5.3 also lets a Commerce product be reviewed directly, which "purchased products only"
+  already handles.
+
 ## 5.3.1 - 2026-10-15
 
 ### Fixed

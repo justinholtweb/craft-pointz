@@ -14,11 +14,13 @@ use craft\commerce\models\OrderNotice;
 use craft\commerce\Plugin as Commerce;
 use craft\commerce\records\Discount as DiscountRecord;
 use craft\db\Query;
+use craft\db\Table as CraftTable;
 use craft\elements\User;
 use craft\helpers\DateTimeHelper;
 use craft\helpers\Db;
 use craft\helpers\Json;
 use craft\helpers\StringHelper;
+use craft\mail\Message;
 use DateInterval;
 use DateTime;
 use DateTimeZone;
@@ -272,14 +274,19 @@ class Coupons extends Component
      * available (`orderCouponAvailable()`) never asks the discount whether it matches. Without
      * this, someone else's code would sit on the cart taking nothing off, with no word to the
      * customer about why.
+     *
+     * With `$code`, judges that code on the order instead of the one it carries — for a template
+     * checking a code before it is saved to the cart.
      */
-    public function getCouponCodeError(Order $order): ?string
+    public function getCouponCodeError(Order $order, ?string $code = null): ?string
     {
-        if (!$order->couponCode || $order->isCompleted || !Plugin::commerceIsReady()) {
+        $code ??= $order->couponCode;
+
+        if (!$code || $order->isCompleted || !Plugin::commerceIsReady()) {
             return null;
         }
 
-        $coupon = $this->getCouponByCode($order->couponCode);
+        $coupon = $this->getCouponByCode($code);
 
         if ($coupon === null) {
             // A code on a discount Pointz manages that Pointz has no record of — a dead code left
@@ -287,7 +294,7 @@ class Coupons extends Component
             $discountId = (new Query())
                 ->select(['discountId'])
                 ->from(CommerceTable::COUPONS)
-                ->where(new Expression('LOWER([[code]]) = :code', [':code' => strtolower(trim($order->couponCode))]))
+                ->where(new Expression('LOWER([[code]]) = :code', [':code' => strtolower(trim($code))]))
                 ->scalar();
 
             return $discountId && in_array((int)$discountId, $this->getManagedDiscountIds(), true)
@@ -633,6 +640,144 @@ class Coupons extends Component
         return (bool)$updated;
     }
 
+    /**
+     * The query behind the coupons index: every code Pointz has issued or adopted, across
+     * customers. `search` matches a code, or a customer's email, in part and without regard to
+     * case — support looking up a code read out over the phone.
+     *
+     * @param array{storeId?: int|null, status?: string|null, ruleId?: int|string|null, search?: string|null} $criteria
+     *        `ruleId` is a rule's ID, or `imported` for adopted codes, which have no rule.
+     */
+    public function getCouponsQuery(array $criteria = []): Query
+    {
+        $query = $this->_query();
+
+        if (!empty($criteria['storeId'])) {
+            $query->andWhere(['storeId' => $criteria['storeId']]);
+        }
+
+        if (!empty($criteria['status'])) {
+            $query->andWhere(['status' => $criteria['status']]);
+        }
+
+        if (($criteria['ruleId'] ?? null) === 'imported') {
+            $query->andWhere(['ruleId' => null]);
+        } elseif (!empty($criteria['ruleId'])) {
+            $query->andWhere(['ruleId' => (int)$criteria['ruleId']]);
+        }
+
+        $search = trim((string)($criteria['search'] ?? ''));
+
+        if ($search !== '') {
+            // Codes are stored in upper case; emails are compared in lower case. An
+            // email match is a subquery rather than a join, so the columns stay unqualified.
+            $byEmail = (new Query())
+                ->select(['id'])
+                ->from(CraftTable::USERS)
+                ->where(new Expression('LOWER([[email]]) LIKE :email', [':email' => '%' . strtolower(addcslashes($search, '%_\\')) . '%']));
+
+            $query->andWhere(['or', ['like', 'code', strtoupper($search)], ['userId' => $byEmail]]);
+        }
+
+        return $query;
+    }
+
+    /**
+     * Codes issued and used per rule, this month and overall, for the top of the coupons index.
+     * Imported codes, which have no rule, are one row with a null `ruleId`.
+     *
+     * @return array<int, array{ruleId: int|null, issued: int, used: int, issuedThisMonth: int, usedThisMonth: int}>
+     */
+    public function getSummary(?int $storeId = null): array
+    {
+        $monthStart = Db::prepareDateForDb((new DateTime('first day of this month midnight', new DateTimeZone(Craft::$app->getTimeZone()))));
+
+        $query = (new Query())
+            ->select([
+                'ruleId',
+                'issued' => new Expression('COUNT(*)'),
+                'used' => new Expression('SUM(CASE WHEN [[status]] = :used THEN 1 ELSE 0 END)', [':used' => Coupon::STATUS_USED]),
+                'issuedThisMonth' => new Expression('SUM(CASE WHEN [[dateCreated]] >= :monthA THEN 1 ELSE 0 END)', [':monthA' => $monthStart]),
+                'usedThisMonth' => new Expression('SUM(CASE WHEN [[status]] = :usedB AND [[dateUsed]] >= :monthB THEN 1 ELSE 0 END)', [':usedB' => Coupon::STATUS_USED, ':monthB' => $monthStart]),
+            ])
+            ->from(Table::COUPONS)
+            ->groupBy(['ruleId']);
+
+        if ($storeId) {
+            $query->where(['storeId' => $storeId]);
+        }
+
+        return array_map(static fn(array $row) => [
+            'ruleId' => $row['ruleId'] !== null ? (int)$row['ruleId'] : null,
+            'issued' => (int)$row['issued'],
+            'used' => (int)$row['used'],
+            'issuedThisMonth' => (int)$row['issuedThisMonth'],
+            'usedThisMonth' => (int)$row['usedThisMonth'],
+        ], $query->all());
+    }
+
+    /**
+     * Sends a rule's coupon emails to an address, with a sample code, so an editor can read the
+     * system messages — in each language the site runs in — before a customer does. Nothing is
+     * issued and nothing is recorded.
+     *
+     * The sample is worth what the rule's coupons are worth. It expires when the rule's would; the
+     * expiry reminder, which has to show a date, gets one a fortnight away if the rule has none.
+     *
+     * @param string[]|null $keys Which messages; all three when null.
+     * @return array<string, bool> Whether each message went.
+     */
+    public function sendTest(Rule $rule, string $email, ?string $language = null, ?array $keys = null, ?User $as = null): array
+    {
+        if (!$rule->awardsCoupon()) {
+            throw new PointzException("Rule {$rule->handle} does not award coupons.");
+        }
+
+        $keys ??= [self::MESSAGE_ISSUED, self::MESSAGE_EXPIRING, self::MESSAGE_UNUSED];
+        $issued = $this->now();
+
+        // The person it is addressed to: the account with that email, or the editor sending it,
+        // so `{{ user.friendlyName }}` reads like a real greeting.
+        $user = Craft::$app->getUsers()->getUserByUsernameOrEmail($email)
+            ?? $as
+            ?? new User(['email' => $email]);
+
+        $results = [];
+
+        foreach ($keys as $key) {
+            $expires = $rule->couponValidDays
+                ? (clone $issued)->add(new DateInterval("P{$rule->couponValidDays}D"))
+                : ($key === self::MESSAGE_EXPIRING ? (clone $issued)->add(new DateInterval('P14D')) : null);
+
+            $coupon = new Coupon([
+                'storeId' => $rule->storeId,
+                'userId' => $user->id,
+                'ruleId' => $rule->id,
+                'code' => 'PZ-SAMPLE00',
+                'type' => $rule->couponType,
+                'amount' => (float)$rule->couponAmount,
+                'status' => Coupon::STATUS_ACTIVE,
+                'dateExpires' => $expires,
+                'dateCreated' => $issued,
+            ]);
+
+            try {
+                $message = $this->_compose($key, $coupon, $user, $rule)->setTo($email);
+
+                if ($language) {
+                    $message->language = $language;
+                }
+
+                $results[$key] = $message->send();
+            } catch (\Throwable $e) {
+                Craft::error("Pointz could not send a test of $key: " . $e->getMessage(), 'pointz');
+                $results[$key] = false;
+            }
+        }
+
+        return $results;
+    }
+
     public function getCouponById(int $id): ?Coupon
     {
         $row = $this->_query()->where(['id' => $id])->one();
@@ -827,13 +972,7 @@ class Coupons extends Component
         }
 
         try {
-            $sent = Craft::$app->getMailer()
-                ->composeFromKey($key, [
-                    'user' => $user,
-                    'coupon' => $coupon,
-                    'rule' => $rule,
-                    'value' => $coupon->getValueLabel(),
-                ])
+            $sent = $this->_compose($key, $coupon, $user, $rule)
                 ->setTo($user)
                 ->send();
         } catch (\Throwable $e) {
@@ -849,6 +988,16 @@ class Coupons extends Component
         }
 
         return $sent;
+    }
+
+    private function _compose(string $key, Coupon $coupon, User $user, ?Rule $rule): Message
+    {
+        return Craft::$app->getMailer()->composeFromKey($key, [
+            'user' => $user,
+            'coupon' => $coupon,
+            'rule' => $rule,
+            'value' => $coupon->getValueLabel(),
+        ]);
     }
 
     private function _query(): Query

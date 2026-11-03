@@ -54,7 +54,7 @@
         <div data-events="custom">
             {{ forms.textField({
                 label: "Event handle"|t('pointz'),
-                instructions: "Which event pays out. `formie:newsletter` answers the Formie form with that handle, `dispatch:club` a signup to that Dispatch list, and anything else is yours to fire from a module with `Plugin::getInstance()->getRewards()->awardEvent($user, 'yourHandle')`. End it in `*` to match several, like `formie:*`. Each customer is paid once per rule unless your code passes a reference."|t('pointz'),
+                instructions: "Which event pays out. `formie:newsletter` answers the Formie form with that handle, `dispatch:club` a signup to that Dispatch list, `campaign:club` a confirmed signup to the Campaign list with that slug, and anything else is yours to fire from a module with `Plugin::getInstance()->getRewards()->awardEvent($user, 'yourHandle')`. End it in `*` to match several, like `formie:*`. Each customer is paid once per rule unless your code passes a reference."|t('pointz'),
                 id: 'eventHandle',
                 name: 'eventHandle',
                 class: 'code',
@@ -247,6 +247,34 @@
                         link: tag('a', { href: couponDiscount.cpEditUrl, text: couponDiscount.name })
                     })|raw }}
                 </p>
+            {% endif %}
+
+            {% if rule.id and rule.awardsCoupon() %}
+                {# No names: these sit inside the rule's form, and must not be saved with it. #}
+                {% embed '_includes/forms/field' with {
+                    label: 'Send a test'|t('pointz'),
+                    instructions: 'Sends the emails as saved under Utilities → System Messages, with a sample code worth what this rule’s coupons are worth. Nothing is issued.'|t('pointz'),
+                    id: 'pointz-test-email',
+                } %}
+                    {% block input %}
+                        <div class="flex" style="flex-wrap: wrap;">
+                            <input type="email" id="pointz-test-email" class="text" placeholder="{{ 'Email address'|t('pointz') }}" value="{{ currentUser.email }}" autocomplete="off" style="min-width: 240px;">
+                            {% if testLanguageOptions|length > 1 %}
+                                <select id="pointz-test-language" class="select" aria-label="{{ 'Language'|t('pointz') }}">
+                                    {% for option in testLanguageOptions %}
+                                        <option value="{{ option.value }}">{{ option.label }}</option>
+                                    {% endfor %}
+                                </select>
+                            {% endif %}
+                            <select id="pointz-test-message" class="select" aria-label="{{ 'Which email'|t('pointz') }}">
+                                {% for option in testMessageOptions %}
+                                    <option value="{{ option.value }}">{{ option.label }}</option>
+                                {% endfor %}
+                            </select>
+                            <button type="button" id="pointz-test-send" class="btn" data-rule="{{ rule.id }}">{{ 'Send test'|t('pointz') }}</button>
+                        </div>
+                    {% endblock %}
+                {% endembed %}
             {% endif %}
         </div>
     {% endif %}
@@ -528,6 +556,51 @@
                     basis.appendChild(element);
                 });
             });
+    });
+})();
+{% endjs %}
+
+{% js %}
+(function() {
+    var button = document.getElementById('pointz-test-send');
+
+    if (!button) {
+        return;
+    }
+
+    var email = document.getElementById('pointz-test-email');
+    var language = document.getElementById('pointz-test-language');
+    var message = document.getElementById('pointz-test-message');
+
+    function send() {
+        button.disabled = true;
+        button.classList.add('loading');
+
+        Craft.sendActionRequest('POST', 'pointz/rules/send-test', {
+            data: {
+                ruleId: button.getAttribute('data-rule'),
+                email: email.value,
+                language: language ? language.value : null,
+                message: message.value
+            }
+        }).then(function(response) {
+            Craft.cp.displayNotice(response.data.message);
+        }).catch(function(error) {
+            Craft.cp.displayError(error.response && error.response.data ? error.response.data.message : error);
+        }).finally(function() {
+            button.disabled = false;
+            button.classList.remove('loading');
+        });
+    }
+
+    button.addEventListener('click', send);
+
+    // Enter in the address field would otherwise save the rule.
+    email.addEventListener('keydown', function(event) {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            send();
+        }
     });
 })();
 {% endjs %}

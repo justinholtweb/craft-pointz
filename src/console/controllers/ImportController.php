@@ -99,7 +99,7 @@ class ImportController extends Controller
 
     /**
      * Outstanding coupons that already exist in Commerce. Columns: code, user, and optionally
-     * expires, issued, remind. Codes that are used or expired don't hold a discount back.
+     * expires, issued, remind, remindAfter. Codes that are used or expired don't hold a discount back.
      */
     public function actionCoupons(string $file): int
     {

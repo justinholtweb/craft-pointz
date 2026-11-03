@@ -244,6 +244,49 @@ class PointzVariable
     }
 
     /**
+     * Why a coupon code can't be used on the cart, or null when it can — Commerce's own checks and
+     * Pointz's together, without saving anything.
+     *
+     * Commerce's `orderCouponAvailable()` doesn't know a Pointz code belongs to one customer, so on
+     * its own it calls someone else's code valid until the cart is saved and the code removed.
+     * Use this instead when a template checks a code before applying it:
+     *
+     * ```twig
+     * {% set error = craft.pointz.couponError(code) %}
+     * {% if error %}<p class="error">{{ error }}</p>{% endif %}
+     * ```
+     *
+     * With no code, the one already on the cart.
+     */
+    public function couponError(?string $code = null, ?Order $cart = null): ?string
+    {
+        $cart ??= $this->cart();
+        $code = $code !== null ? trim($code) : $cart?->couponCode;
+
+        if ($cart === null || !$code || !Plugin::commerceIsReady()) {
+            return null;
+        }
+
+        // Commerce reads the code off the order, so it is put there for the question and taken
+        // straight back. Nothing is saved.
+        $previous = $cart->couponCode;
+        $cart->couponCode = $code;
+        $explanation = '';
+
+        try {
+            $available = Commerce::getInstance()->getDiscounts()->orderCouponAvailable($cart, $explanation);
+        } finally {
+            $cart->couponCode = $previous;
+        }
+
+        if (!$available) {
+            return $explanation ?: Craft::t('commerce', 'Coupon not valid.');
+        }
+
+        return Plugin::getInstance()->getCoupons()->getCouponCodeError($cart, $code);
+    }
+
+    /**
      * The current cart, without creating one. A visitor who has not started shopping should not
      * get a cart just because a template asked about their points.
      */

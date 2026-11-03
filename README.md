@@ -61,8 +61,9 @@ start paying out on a live store before anyone has read the numbers.
 | Backfill with a dry run and an undo | | ✅ |
 | Ledger CSV export | | ✅ |
 | Liability dashboard widget | | ✅ |
-| Rewards for an approved review (Stars), a birthday, a points milestone, or a custom event from Formie, Dispatch or your own code | | ✅ |
+| Rewards for an approved review (Stars), a birthday, a points milestone, or a custom event from Formie, Dispatch, Campaign or your own code | | ✅ |
 | **Coupons as a reward**: single-use, one customer, optional expiry and reminder email, one Commerce discount per rule | | ✅ |
+| A coupons index with search and revoke, and test sends of the coupon emails | | ✅ |
 
 Refund reversal and holds are deliberately in **Lite**. A free edition that over-awards is a bug,
 not an upsell.

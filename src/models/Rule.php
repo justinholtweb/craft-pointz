@@ -451,7 +451,7 @@ class Rule extends Model
         }
 
         if ($attribute === 'couponRemindAfterDays' && $this->couponRemindAfterDays !== null) {
-            if (!preg_match('/^\s*\d+(\s*,\s*\d+)*\s*$/', $this->couponRemindAfterDays) || in_array(0, $this->getCouponRemindAfterDays(), true)) {
+            if (!preg_match('/^\s*\d+(\s*,\s*\d+)*\s*$/', $this->couponRemindAfterDays) || in_array(0, array_map('intval', explode(',', $this->couponRemindAfterDays)), true)) {
                 $this->addError($attribute, Craft::t('pointz', 'Whole numbers of days, separated by commas.'));
             } elseif ($this->couponValidDays !== null && max($this->getCouponRemindAfterDays()) >= $this->couponValidDays) {
                 $this->addError($attribute, Craft::t('pointz', 'A reminder after the coupon has expired would never be sent.'));
@@ -598,13 +598,16 @@ class Rule extends Model
     }
 
     /**
-     * "30, 60,180" as [30, 60, 180].
+     * "30, 60,180" as [30, 60, 180]. Semicolons, bars and spaces separate too, so a CSV cell
+     * doesn't need quoting.
      *
      * @return int[]
      */
     public static function parseDays(?string $value): array
     {
-        $days = array_map('intval', array_filter(array_map('trim', explode(',', (string)$value)), static fn(string $part) => ctype_digit($part)));
+        $parts = preg_split('/[\s,;|]+/', trim((string)$value), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        $days = array_map('intval', array_filter($parts, static fn(string $part) => ctype_digit($part)));
+        $days = array_filter($days, static fn(int $day) => $day > 0);
         $days = array_values(array_unique($days));
         sort($days);
 

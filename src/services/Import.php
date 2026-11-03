@@ -155,7 +155,8 @@ class Import extends Component
      * With no expiry the discount's own end date is used, which is where a per-customer discount
      * usually keeps it. With no reminder date, `remindDays` before the expiry, if given.
      * `remindAfter` adds reminders counted from the issue date (or today, with none); those that
-     * have already gone by are not sent.
+     * have already gone by are not sent. A row's own `remindAfter` column (`30;60;180`, or a quoted
+     * `"30,60,180"`) replaces the option for that row, and `0` gives the row none.
      *
      * A discount is all or nothing. Once Pointz manages a discount, only codes it knows the owner
      * of will work on it — so a discount with live codes this file does not account for is refused
@@ -288,7 +289,12 @@ class Import extends Component
                 $dateRemind = (clone $dateExpires)->sub(new DateInterval("P{$remindDays}D"));
             }
 
-            $reminders = $plugin->getCoupons()->reminderSchedule($dateIssued ?? $now, $dateExpires, $dateRemind, $remindAfter, $now);
+            // A file mixing kinds of code — reminders on the 20% ones, none on the rest — says so
+            // per row rather than being split into one file per schedule.
+            $rowRemindAfter = $this->_value($row, ['remindafter', 'remindafterdays']);
+            $afterDays = $rowRemindAfter !== null ? Rule::parseDays($rowRemindAfter) : $remindAfter;
+
+            $reminders = $plugin->getCoupons()->reminderSchedule($dateIssued ?? $now, $dateExpires, $dateRemind, $afterDays, $now);
 
             $planned[(int)$commerceCoupon['id']] = [
                 'line' => $line,

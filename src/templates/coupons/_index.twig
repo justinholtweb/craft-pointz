@@ -1,0 +1,170 @@
+{% extends "_layouts/cp" %}
+
+{% set title = "Coupons"|t('pointz') %}
+{% set selectedSubnavItem = 'coupons' %}
+
+{% set filters = { store: store.handle, status: status, rule: ruleId, search: search } %}
+
+{% block content %}
+    {% if summary|length %}
+        <table class="data fullwidth" style="margin-bottom: 24px;">
+            <thead>
+                <tr>
+                    <th scope="col">{{ "Rule"|t('pointz') }}</th>
+                    <th scope="col">{{ "Issued this month"|t('pointz') }}</th>
+                    <th scope="col">{{ "Used this month"|t('pointz') }}</th>
+                    <th scope="col">{{ "Issued"|t('pointz') }}</th>
+                    <th scope="col">{{ "Used"|t('pointz') }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in summary %}
+                    {% set rule = row.ruleId ? (rules[row.ruleId] ?? null) : null %}
+                    <tr>
+                        <th scope="row">
+                            {% if rule %}
+                                <a href="{{ url('pointz/coupons', filters|merge({ rule: rule.id, page: null })) }}">{{ rule.name }}</a>
+                            {% elseif row.ruleId %}
+                                <span class="light">{{ "Rule #{id}"|t('pointz', { id: row.ruleId }) }}</span>
+                            {% else %}
+                                <a href="{{ url('pointz/coupons', filters|merge({ rule: 'imported', page: null })) }}">{{ "Imported, or from a deleted rule"|t('pointz') }}</a>
+                            {% endif %}
+                        </th>
+                        <td>{{ row.issuedThisMonth|number }}</td>
+                        <td>{{ row.usedThisMonth|number }}</td>
+                        <td>{{ row.issued|number }}</td>
+                        <td>{{ row.used|number }}{% if row.issued %} <span class="light">({{ (row.used / row.issued * 100)|round }}%)</span>{% endif %}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% endif %}
+
+    <form method="get" action="{{ url('pointz/coupons') }}" class="flex" style="margin-bottom: 14px; flex-wrap: wrap;">
+        {% if stores|length > 1 %}
+            <select name="store" class="select" aria-label="{{ 'Store'|t('pointz') }}">
+                {% for s in stores %}
+                    <option value="{{ s.handle }}"{{ s.id == store.id ? ' selected' : '' }}>{{ s.name }}</option>
+                {% endfor %}
+            </select>
+        {% else %}
+            <input type="hidden" name="store" value="{{ store.handle }}">
+        {% endif %}
+
+        <input type="search" name="search" class="text" value="{{ search }}" placeholder="{{ 'Code or customer email'|t('pointz') }}" aria-label="{{ 'Search'|t('pointz') }}" autocomplete="off" style="min-width: 240px;">
+
+        <select name="status" class="select" aria-label="{{ 'Status'|t('pointz') }}">
+            <option value="">{{ "Any status"|t('pointz') }}</option>
+            {% for value, label in statuses %}
+                <option value="{{ value }}"{{ value == status ? ' selected' : '' }}>{{ label }}</option>
+            {% endfor %}
+        </select>
+
+        <select name="rule" class="select" aria-label="{{ 'Rule'|t('pointz') }}">
+            <option value="">{{ "Any rule"|t('pointz') }}</option>
+            {% for rule in rules %}
+                <option value="{{ rule.id }}"{{ rule.id ~ '' == ruleId ? ' selected' : '' }}>{{ rule.name }}</option>
+            {% endfor %}
+            <option value="imported"{{ ruleId == 'imported' ? ' selected' : '' }}>{{ "Imported, or from a deleted rule"|t('pointz') }}</option>
+        </select>
+
+        <button type="submit" class="btn">{{ "Filter"|t('pointz') }}</button>
+        {% if search or status or ruleId %}
+            <a class="btn" href="{{ url('pointz/coupons', { store: store.handle }) }}">{{ "Clear"|t('pointz') }}</a>
+        {% endif %}
+    </form>
+
+    {% if coupons|length %}
+        <table class="data fullwidth collapsible">
+            <thead>
+                <tr>
+                    <th scope="col">{{ "Code"|t('pointz') }}</th>
+                    <th scope="col">{{ "Customer"|t('pointz') }}</th>
+                    <th scope="col">{{ "Rule"|t('pointz') }}</th>
+                    <th scope="col">{{ "Worth"|t('pointz') }}</th>
+                    <th scope="col">{{ "Issued"|t('pointz') }}</th>
+                    <th scope="col">{{ "Expires"|t('pointz') }}</th>
+                    <th scope="col">{{ "Status"|t('pointz') }}</th>
+                    {% if canRevoke %}<th scope="col" class="thin"><span class="visually-hidden">{{ "Actions"|t('pointz') }}</span></th>{% endif %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for coupon in coupons %}
+                    {% set customer = users[coupon.userId] ?? null %}
+                    {% set usedOn = coupon.orderId ? (orders[coupon.orderId] ?? null) : null %}
+                    {% set rule = coupon.ruleId ? (rules[coupon.ruleId] ?? null) : null %}
+                    <tr>
+                        <th scope="row"><code>{{ coupon.code }}</code></th>
+                        <td>
+                            {% if customer %}
+                                <a href="{{ url('pointz/balances/' ~ customer.id, { store: store.handle }) }}">{{ customer.uiLabel }}</a>
+                                {% if customer.email and customer.email != customer.uiLabel %}<br><span class="light">{{ customer.email }}</span>{% endif %}
+                            {% else %}
+                                <span class="light">{{ "Deleted customer"|t('pointz') }}</span>
+                            {% endif %}
+                        </td>
+                        <td class="light">{{ rule ? rule.name : (coupon.reference starts with 'import:' ? 'Imported'|t('pointz') : '—') }}</td>
+                        <td>{{ coupon.valueLabel }}</td>
+                        <td class="light">{{ coupon.dateCreated|datetime('short') }}</td>
+                        <td>{{ coupon.dateExpires ? coupon.dateExpires|date('short') : "Never"|t('pointz') }}</td>
+                        <td>
+                            {% if coupon.status == 'active' and not coupon.isUsable %}
+                                {{ "Expired"|t('pointz') }}
+                            {% else %}
+                                {{ coupon.statusLabel }}
+                            {% endif %}
+                            {% if usedOn %}
+                                <a href="{{ usedOn.cpEditUrl }}">{{ usedOn.reference ?: usedOn.shortNumber }}</a>
+                                {% if coupon.dateUsed %}<span class="light">{{ coupon.dateUsed|date('short') }}</span>{% endif %}
+                            {% endif %}
+                        </td>
+                        {% if canRevoke %}
+                            <td>
+                                {% if coupon.status == 'active' %}
+                                    <button type="button" class="btn small pointz-revoke" data-id="{{ coupon.id }}" data-code="{{ coupon.code }}">{{ "Revoke"|t('pointz') }}</button>
+                                {% endif %}
+                            </td>
+                        {% endif %}
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        {% set pages = (total / perPage)|round(0, 'ceil') %}
+        <nav class="flex" style="margin-top: 14px;">
+            {% if page > 1 %}
+                <a class="btn" href="{{ url('pointz/coupons', filters|merge({ page: page - 1 })) }}">{{ "Previous"|t('pointz') }}</a>
+            {% endif %}
+            <span class="light" style="align-self: center;">
+                {{ "{total, plural, =1{1 code} other{# codes}}"|t('pointz', { total: total }) }}{% if pages > 1 %} · {{ "Page {page} of {pages}"|t('pointz', { page: page, pages: pages }) }}{% endif %}
+            </span>
+            {% if page < pages %}
+                <a class="btn" href="{{ url('pointz/coupons', filters|merge({ page: page + 1 })) }}">{{ "Next"|t('pointz') }}</a>
+            {% endif %}
+        </nav>
+    {% elseif search or status or ruleId %}
+        <p>{{ "No coupons match."|t('pointz') }}</p>
+    {% else %}
+        <p>{{ "Pointz hasn’t issued any coupons yet."|t('pointz') }}</p>
+    {% endif %}
+{% endblock %}
+
+{% if canRevoke %}
+    {% js %}
+    document.querySelectorAll('.pointz-revoke').forEach(function(button) {
+        button.addEventListener('click', function() {
+            button.disabled = true;
+
+            Craft.sendActionRequest('POST', 'pointz/balances/revoke-coupon', {
+                data: { couponId: button.getAttribute('data-id') }
+            }).then(function(response) {
+                Craft.cp.displayNotice(response.data.message);
+                window.location.reload();
+            }).catch(function(error) {
+                button.disabled = false;
+                Craft.cp.displayError(error.response && error.response.data ? error.response.data.message : error);
+            });
+        });
+    });
+    {% endjs %}
+{% endif %}

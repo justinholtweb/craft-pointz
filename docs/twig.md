@@ -69,6 +69,19 @@ craft.pointz.coupons('used', user, storeId)
 {% endfor %}
 ```
 
+Whether a code can be used on the cart, before it's applied:
+
+```twig
+{% set error = craft.pointz.couponError(code) %}       {# the current cart #}
+{% set error = craft.pointz.couponError(code, cart) %}
+{% set error = craft.pointz.couponError() %}           {# the code already on the cart #}
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+```
+
+It returns Commerce's own explanation ("Coupon not valid.", "Discount is out of date.") or null,
+and runs Commerce's checks and Pointz's together, so someone else's Pointz code is refused here
+rather than looking valid until the cart is saved. It saves nothing.
+
 A `Coupon` has `code`, `valueLabel` ("10%" or "€5.00"), `type`, `amount`, `status`,
 `statusLabel`, `dateExpires`, `dateUsed`, `rule`, `order` (the order it was used on) and
 `isUsable`.

@@ -104,6 +104,11 @@ The generic hook. Give the rule an **event handle**, and anything that fires tha
 - `dispatch:club` fires when someone subscribes to the Dispatch list `club` from the site.
   A CSV import, or a subscriber added in the control panel, doesn't pay a welcome reward to
   a whole list.
+- `campaign:club` fires when someone's subscription to the Campaign mailing list with the slug
+  `club` goes through from the site. On a list type that requires verification that is the
+  double opt-in, so an address that never confirms gets nothing. Campaign's imports and syncs
+  don't count. Switch on **Pay people without an account** for subscribers who have none; once
+  per email, like any rule without a reference.
 - Anything else is yours to fire from a module:
 
 ```php
@@ -231,8 +236,19 @@ sandbox on: a coupon's `code`, `type`, `amount`, `status`, `valueLabel`, `isUsab
 a rule's `name` and `couponLabel`, are allowed in sandboxed templates. To send
 them some other way, see `Coupons::EVENT_BEFORE_REMIND` in [Twig and events](twig.md).
 
-A customer's coupons are listed on their balance page in the control panel, where a live one can
-be revoked, and in templates through `craft.pointz.coupons()`.
+**Send a test.** A saved coupon rule has a *Send a test* field: an address, a language (when the
+sites run in more than one) and which email. It sends the system messages as they're saved, with a
+sample code (`PZ-SAMPLE00`) worth what the rule's coupons are worth. Nothing is issued. The sample
+expires when the rule's codes would, and the expiry reminder, which needs a date, gets one two
+weeks out if the rule's codes never expire.
+
+Every code is listed under **Pointz → Coupons**, and a customer's on their balance page; a live one
+can be revoked from either. In templates they come from `craft.pointz.coupons()`.
+
+**Checking a code before it's on the cart.** Commerce's `orderCouponAvailable()` doesn't know a
+Pointz code has an owner, so on its own it calls someone else's code valid until the cart is saved
+and the code taken off. `craft.pointz.couponError(code)` asks Commerce and Pointz together and saves
+nothing; see [Twig and events](twig.md).
 
 ## Redeeming on the front end
 
@@ -329,6 +345,12 @@ decision in Commerce's own screens.
   them), their coupons, their whole history, a box for moving the balance by hand, and a
   *Rebuild from the ledger* button, which is the support answer to "the number looks wrong".
 - **Ledger** — every movement, filterable by store, kind and currency, exportable as CSV on Pro.
+- **Coupons** *(Pro)* — every code Pointz has issued or taken over, across customers: code, owner,
+  rule, value, issued, expires, status, and the order a used code went on. Search by any part of a
+  code or of a customer's email, which is how support finds a code read out over the phone; filter
+  by status, rule and store; revoke a live code from the list. Above it, codes issued and used per
+  rule, this month and overall. Imported codes, and codes from a rule since deleted, are grouped as
+  one row.
 - **Order edit screen** — what that order earned and spent, and a link to the customer's balance.
 - **Dashboard widget** *(Pro)* — the unredeemed liability, in points and in money.
 
@@ -427,9 +449,11 @@ discount per customer ends up with none of them.
 | `expires` | Optional. Defaults to the discount's own end date. |
 | `issued` | Optional. When the old system sent it, for the customer's history. |
 | `remind` | Optional. When to send the expiry reminder. Defaults to `--remind-days` before the expiry, if given. |
+| `remindAfter` | Optional. Days after `issued` to remind, for this row: `30;60;180` (or a quoted `"30,60,180"`). Replaces `--remind-after` for the row; `0` gives it none, and an empty cell uses `--remind-after`. |
 
 `--remind-after` adds reminders counted from `issued` (or from today, for a row without one),
-sent while the code is unused. Offsets that have already gone by are dropped rather than all sent
+sent while the code is unused. A file mixing kinds of code, with reminders on some and not others,
+uses the `remindAfter` column instead of being split. Offsets that have already gone by are dropped rather than all sent
 on the first night.
 
 The value shown to the customer is read from the discount: its percentage off, or its amount off.

@@ -10,6 +10,7 @@ use craft\helpers\UrlHelper;
 use craft\web\Controller;
 use justinholtweb\pointz\models\Rule;
 use justinholtweb\pointz\Plugin;
+use justinholtweb\pointz\services\Coupons;
 use yii\web\ForbiddenHttpException;
 use yii\web\NotFoundHttpException;
 use yii\web\Response;
@@ -91,6 +92,11 @@ class RulesController extends Controller
             'couponTypeOptions' => $this->_options(Rule::couponTypes()),
             'birthdayFieldOptions' => $this->_birthdayFieldOptions(),
             'starsInstalled' => Craft::$app->getPlugins()->isPluginEnabled('stars'),
+            'testLanguageOptions' => $this->_languageOptions(),
+            'testMessageOptions' => array_merge(
+                [['value' => '', 'label' => Craft::t('pointz', 'All three')]],
+                array_map(static fn(array $message) => ['value' => $message['key'], 'label' => $message['heading']], Coupons::systemMessages()),
+            ),
             'couponDiscount' => $rule->couponDiscountId
                 ? Commerce::getInstance()->getDiscounts()->getDiscountById($rule->couponDiscountId)
                 : null,
@@ -229,6 +235,58 @@ class RulesController extends Controller
     }
 
     /**
+     * Sends a coupon rule's emails to an address with a sample code, so an editor can read each
+     * translation before a customer does. Issues nothing.
+     */
+    public function actionSendTest(): Response
+    {
+        $this->requirePostRequest();
+        $this->requireAcceptsJson();
+
+        $plugin = Plugin::getInstance();
+        $rule = $plugin->getRules()->getRuleById((int)$this->request->getRequiredBodyParam('ruleId'));
+
+        if ($rule === null) {
+            throw new NotFoundHttpException('Earning rule not found');
+        }
+
+        if (!$rule->awardsCoupon()) {
+            return $this->asFailure(Craft::t('pointz', 'This rule doesn’t award coupons.'));
+        }
+
+        $email = trim((string)$this->request->getBodyParam('email'));
+
+        if (!(new \yii\validators\EmailValidator())->validate($email)) {
+            return $this->asFailure(Craft::t('pointz', 'Enter an email address to send the test to.'));
+        }
+
+        $language = $this->request->getBodyParam('language') ?: null;
+        $languages = array_unique(array_map(static fn($site) => $site->language, Craft::$app->getSites()->getAllSites()));
+
+        if ($language !== null && !in_array($language, $languages, true)) {
+            $language = null;
+        }
+
+        $message = $this->request->getBodyParam('message') ?: null;
+        $keys = array_column(Coupons::systemMessages(), 'key');
+        $keys = $message !== null && in_array($message, $keys, true) ? [$message] : null;
+
+        $results = $plugin->getCoupons()->sendTest($rule, $email, $language, $keys, Craft::$app->getUser()->getIdentity());
+        $failed = array_keys(array_filter($results, static fn(bool $sent) => !$sent));
+
+        if ($failed) {
+            return $this->asFailure(Craft::t('pointz', 'Could not send {count, plural, =1{one of the emails} other{# of the emails}}. Check the email settings and the Pointz log.', [
+                'count' => count($failed),
+            ]), ['results' => $results]);
+        }
+
+        return $this->asSuccess(Craft::t('pointz', '{count, plural, =1{Test email sent} other{# test emails sent}} to {email}.', [
+            'count' => count($results),
+            'email' => $email,
+        ]), ['results' => $results]);
+    }
+
+    /**
      * The user fields a birthday could be kept in: date fields first, then plain text fields that
      * might hold `1990-03-14`.
      *
@@ -246,6 +304,25 @@ class RulesController extends Controller
         }
 
         return $options;
+    }
+
+    /**
+     * The languages the sites run in, primary site's first.
+     *
+     * @return array<int, array{value: string, label: string}>
+     */
+    private function _languageOptions(): array
+    {
+        $sites = Craft::$app->getSites();
+        $languages = array_unique(array_merge(
+            [$sites->getPrimarySite()->language],
+            array_map(static fn($site) => $site->language, $sites->getAllSites()),
+        ));
+
+        return array_map(static fn(string $language) => [
+            'value' => $language,
+            'label' => Craft::$app->getI18n()->getLocaleById($language)->getDisplayName(Craft::$app->language) . " ($language)",
+        ], array_values($languages));
     }
 
     /**

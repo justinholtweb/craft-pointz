@@ -256,6 +256,13 @@ class Plugin extends BasePlugin
                 'label' => Craft::t('pointz', 'Ledger'),
                 'url' => 'pointz/ledger',
             ];
+
+            if ($this->isPro()) {
+                $subNav['coupons'] = [
+                    'label' => Craft::t('pointz', 'Coupons'),
+                    'url' => 'pointz/coupons',
+                ];
+            }
         }
 
         if ($user->checkPermission('pointz-manageRules')) {
@@ -330,6 +337,7 @@ class Plugin extends BasePlugin
                 $event->rules['pointz/balances'] = 'pointz/balances/index';
                 $event->rules['pointz/balances/<userId:\d+>'] = 'pointz/balances/detail';
                 $event->rules['pointz/ledger'] = 'pointz/ledger/index';
+                $event->rules['pointz/coupons'] = 'pointz/coupons/index';
                 $event->rules['pointz/rules'] = 'pointz/rules/index';
                 $event->rules['pointz/rules/<storeHandle:{handle}>'] = 'pointz/rules/index';
                 $event->rules['pointz/rules/<storeHandle:{handle}>/new'] = 'pointz/rules/edit';
@@ -572,7 +580,7 @@ class Plugin extends BasePlugin
      * The triggers that are not an order. Each handler is wrapped: a review approval, a form
      * submission or a newsletter signup must never fail because a reward could not be paid.
      *
-     * Stars, Formie and Dispatch are hooked by class name, so none of them has to be installed —
+     * Stars, Formie, Dispatch and Campaign are hooked by class name, so none of them has to be installed —
      * an event on a class that never loads simply never fires.
      */
     private function _registerRewardTriggers(): void
@@ -713,6 +721,32 @@ class Plugin extends BasePlugin
                     ]);
                 } catch (\Throwable $e) {
                     Craft::error('Pointz could not reward a Dispatch subscription: ' . $e->getMessage(), 'pointz');
+                }
+            }
+        );
+
+        // Campaign subscribes a contact once — after the double opt-in, on a list that asks for
+        // one — and that is the moment that pays: an address that never confirms gets nothing.
+        // Only a visitor's own subscription counts (`web`); Campaign's imports and syncs don't go
+        // through `subscribeContact()`, and a control-panel or API source is not a signup.
+        Event::on(
+            'putyourlightson\campaign\services\FormsService',
+            'afterSubscribeContact',
+            static function($event) {
+                $contact = $event->contact ?? null;
+                $list = $event->mailingList ?? null;
+
+                if (!$contact || !$list || ($event->sourceType ?? '') !== 'web' || !$contact->email) {
+                    return;
+                }
+
+                try {
+                    Plugin::getInstance()->getRewards()->awardEvent($contact->userId ?: $contact->email, 'campaign:' . $list->slug, null, null, [
+                        'contact' => $contact,
+                        'list' => $list,
+                    ]);
+                } catch (\Throwable $e) {
+                    Craft::error('Pointz could not reward a Campaign subscription: ' . $e->getMessage(), 'pointz');
                 }
             }
         );

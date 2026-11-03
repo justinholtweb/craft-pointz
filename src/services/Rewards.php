@@ -230,9 +230,10 @@ class Rewards extends Component
     }
 
     /**
-     * An approved Stars review. Stars attaches a review to an entry and records the reviewer's
-     * email, not a user, so the customer is found by email and "what they bought" means a product
-     * they ordered that is, or is related to, the reviewed entry.
+     * An approved Stars review, unless it was imported. Stars attaches a review to an entry (or a
+     * Commerce product) and records the reviewer's email, not a user, so the customer is found by
+     * email and "what they bought" means a product they ordered that is, or is related to, the
+     * reviewed entry.
      *
      * @param object $review A `justinholtweb\stars\elements\Review`.
      * @return array<int, Transaction|Coupon>
@@ -240,6 +241,13 @@ class Rewards extends Component
     public function awardReview(object $review, ?int $storeId = null): array
     {
         if (($review->reviewStatus ?? null) !== 'approved' || empty($review->id)) {
+            return [];
+        }
+
+        // Brought over by `stars/import/comments` (Stars 5.3+): the customer was rewarded for it
+        // where it was first written. Skipped on every save, not just the import's, so approving or
+        // editing it later pays nothing either.
+        if (!empty($review->importBatch ?? null)) {
             return [];
         }
 

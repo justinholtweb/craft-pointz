@@ -51,6 +51,7 @@ Anything that cannot survive that rule does not ship.
 | Review saved | `Element::EVENT_AFTER_SAVE` on Stars' `Review`, by class name | Review rules, once approved. |
 | Form submitted | Formie `Submissions` `afterSubmission`, by class name | Custom event `formie:<formHandle>`. |
 | List joined | Dispatch `SubscriptionRecord` after insert, by class name | Custom event `dispatch:<listHandle>`, site requests only, so an import doesn't pay a whole list. |
+| Subscription confirmed | Campaign `FormsService` `afterSubscribeContact`, by class name | Custom event `campaign:<listSlug>`, `web` source only. Fires after the double opt-in on a verified list; Campaign's imports don't call `subscribeContact()`. |
 
 The adjuster is registered **last** on purpose: it has to see shipping, discount and tax before it
 can cap a redemption against a real total. `Order::recalculate()` clears every adjustment before
@@ -215,6 +216,14 @@ exists and is documented as a trade rather than a safety feature: `markAsComplet
 - **Stars stores a reviewer email and an entry, not a user and a product.** The customer is found
   by email, and "bought it" means a purchased product (or its variant) that is the entry or is
   related to it in either direction.
+- **`Discounts::orderCouponAvailable()` has no event**, so it can't be taught that a Pointz code
+  has an owner. The order validator removes the code on save; `craft.pointz.couponError()` is the
+  answer for a template that checks first. Swapping Commerce's service was rejected: another plugin
+  may do the same.
+- **Mailer `EVENT_BEFORE_SEND` passes a `yii\mail\MailEvent`**, not Craft's. A handler type-hinted
+  with `craft\events\MailEvent` throws, which looks exactly like a failed send.
+- **Campaign isn't in the harness.** Its check `eval`s an empty `FormsService` and raises the
+  class-level event by name.
 - **Dispatch has no "subscribed" event**, and its CSV import goes through the same `subscribe()`.
   The hook listens to `SubscriptionRecord` inserts and ignores console, queue and CP requests.
   The check stands in a site request by swapping in a `craft\web\Request` with
@@ -229,7 +238,7 @@ No local PHP on this Mac. Everything runs inside the plugin-testing container:
 
 ```sh
 docker exec -w /var/www/html ddev-plugin-testing-web \
-  php /var/www/craft-pointz/tests/integration/checks.php          # 115 checks
+  php /var/www/craft-pointz/tests/integration/checks.php          # 124 checks
 docker exec -w /var/www/html ddev-plugin-testing-web \
   php /var/www/craft-pointz/tests/integration/security.php        # 11, a guest vs the signed-in customer over HTTP
 docker exec -w /var/www/html ddev-plugin-testing-web \

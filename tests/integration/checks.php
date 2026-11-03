@@ -1575,7 +1575,7 @@ try {
         craft\helpers\Db::update(Table::COUPONS, ['dateRemind' => craft\helpers\Db::prepareDateForDb(new DateTime('-1 minute'))], ['id' => $coupon->id]);
 
         // The mailer refusing the message is what a broken transport looks like from here.
-        $refuse = static function(craft\events\MailEvent $event) {
+        $refuse = static function(yii\mail\MailEvent $event) {
             $event->isValid = false;
         };
         $mailer = Craft::$app->getMailer();
@@ -1766,6 +1766,175 @@ try {
     });
 
     // ---------------------------------------------------------------------------------------
+    section('Coupons index, test sends and code checks');
+
+    $indexed = makeUser('indexed');
+    $indexRule = makeRule('indexCoupon', ['event' => Rule::EVENT_CUSTOM, 'eventHandle' => 'indexCoupon', 'currency' => Rule::CURRENCY_COUPON, 'couponType' => Rule::COUPON_PERCENT, 'couponAmount' => 15, 'couponValidDays' => 60, 'enabled' => false]);
+    $indexA = $couponsService->issue($indexRule, $indexed, $storeId);
+    $indexB = $couponsService->issue($indexRule, $indexed, $storeId);
+    craft\helpers\Db::update(Table::COUPONS, ['status' => 'used', 'dateUsed' => craft\helpers\Db::prepareDateForDb(new DateTime())], ['id' => $indexB->id]);
+
+    check('the index finds a code by part of it, in any case, and a customer by part of their email', function() use ($couponsService, $indexA, $indexB, $indexed, $indexRule, $storeId) {
+        // Within the rule: saving the fixture customer also paid them the run's signup coupon.
+        $ids = static fn(array $criteria) => array_map('intval', $couponsService->getCouponsQuery($criteria + ['storeId' => $storeId, 'ruleId' => $indexRule->id])->select(['id'])->column());
+
+        $byCode = $ids(['search' => strtolower(substr($indexA->code, 3, 6))]);
+        $byEmail = $ids(['search' => strtoupper(explode('@', $indexed->email)[0])]);
+        $nothing = $ids(['search' => '%']);
+
+        return in_array($indexA->id, $byCode, true) && !in_array($indexB->id, $byCode, true)
+            && in_array($indexA->id, $byEmail, true) && in_array($indexB->id, $byEmail, true) && count($byEmail) === 2
+            && !in_array($indexA->id, $nothing, true)
+            ?: json_encode(['code' => $byCode, 'email' => $byEmail, 'percent' => count($nothing)]);
+    });
+
+    check('the index filters by status and by rule, and the summary counts per rule', function() use ($couponsService, $indexRule, $indexB, $storeId) {
+        $used = array_map('intval', $couponsService->getCouponsQuery(['storeId' => $storeId, 'status' => 'used', 'ruleId' => $indexRule->id])->select(['id'])->column());
+        $all = (int)$couponsService->getCouponsQuery(['storeId' => $storeId, 'ruleId' => $indexRule->id])->count();
+        $imported = (int)$couponsService->getCouponsQuery(['storeId' => $storeId, 'ruleId' => 'imported', 'search' => $indexB->code])->count();
+        $row = array_values(array_filter($couponsService->getSummary($storeId), static fn(array $row) => $row['ruleId'] === $indexRule->id))[0] ?? null;
+
+        return $used === [$indexB->id] && $all === 2 && $imported === 0
+            && $row === ['ruleId' => $indexRule->id, 'issued' => 2, 'used' => 1, 'issuedThisMonth' => 2, 'usedThisMonth' => 1]
+            ?: json_encode(['used' => $used, 'all' => $all, 'imported' => $imported, 'row' => $row]);
+    });
+
+    check('the coupons index and rule templates compile', function() {
+        // A screen extending the CP layout can't be rendered from the console; it is checked over
+        // HTTP instead. This catches a Twig syntax error.
+        Craft::$app->getView()->setTemplateMode(craft\web\View::TEMPLATE_MODE_CP);
+        $twig = Craft::$app->getView()->getTwig();
+        $twig->load('pointz/coupons/_index');
+        $twig->load('pointz/rules/_edit');
+
+        return true;
+    });
+
+    check('a test send renders all three emails with a sample code, in the language asked, and issues nothing', function() use ($couponsService, $indexRule) {
+        $before = (int)(new Query())->from(Table::COUPONS)->where(['ruleId' => $indexRule->id])->count();
+        $seen = [];
+        $capture = static function(yii\mail\MailEvent $event) use (&$seen) {
+            $email = $event->message->getSymfonyEmail();
+            $seen[] = [
+                'key' => $event->message->key,
+                'to' => array_keys($event->message->getTo() ?? []),
+                'language' => $event->message->language,
+                'subject' => $event->message->getSubject(),
+                'body' => (string)$email->getTextBody(),
+            ];
+            // Rendered and inspected; not delivered.
+            $event->isValid = false;
+        };
+        $mailer = Craft::$app->getMailer();
+        $mailer->on(craft\mail\Mailer::EVENT_BEFORE_SEND, $capture);
+
+        try {
+            $language = Craft::$app->getSites()->getPrimarySite()->language;
+            $results = $couponsService->sendTest($indexRule, 'editor@pointz.example', $language);
+        } finally {
+            $mailer->off(craft\mail\Mailer::EVENT_BEFORE_SEND, $capture);
+        }
+
+        $after = (int)(new Query())->from(Table::COUPONS)->where(['ruleId' => $indexRule->id])->count();
+        $keys = array_column($seen, 'key');
+        $ok = count($seen) === 3
+            && $keys === ['pointz_coupon_issued', 'pointz_coupon_expiring', 'pointz_coupon_unused']
+            && array_unique(array_merge(...array_column($seen, 'to'))) === ['editor@pointz.example']
+            && array_unique(array_column($seen, 'language')) === [$language];
+
+        foreach ($seen as $message) {
+            $ok = $ok && str_contains($message['body'], 'PZ-SAMPLE00') && str_contains($message['subject'], '15%');
+        }
+
+        // Refused by the capture, so each one reports as not sent.
+        return $ok && $before === $after && $results === array_fill_keys($keys, false)
+            ?: json_encode(['seen' => $seen, 'before' => $before, 'after' => $after, 'results' => $results]);
+    });
+
+    check('a test send of one message sends only that one, and refuses a rule that awards no coupon', function() use ($couponsService, $indexRule, $storeId, $tag) {
+        $count = 0;
+        $capture = static function(yii\mail\MailEvent $event) use (&$count) {
+            $count++;
+            $event->isValid = false;
+        };
+        $mailer = Craft::$app->getMailer();
+        $mailer->on(craft\mail\Mailer::EVENT_BEFORE_SEND, $capture);
+
+        try {
+            $couponsService->sendTest($indexRule, 'editor@pointz.example', null, ['pointz_coupon_unused']);
+        } finally {
+            $mailer->off(craft\mail\Mailer::EVENT_BEFORE_SEND, $capture);
+        }
+
+        $points = new Rule(['storeId' => $storeId, 'handle' => $tag . 'notCoupon', 'currency' => Rule::CURRENCY_POINTS]);
+
+        try {
+            $couponsService->sendTest($points, 'editor@pointz.example');
+            $refused = false;
+        } catch (PointzException) {
+            $refused = true;
+        }
+
+        return $count === 1 && $refused ?: json_encode(['count' => $count, 'refused' => $refused]);
+    });
+
+    check('craft.pointz.couponError() calls someone else’s code invalid before the cart is saved, and changes nothing', function() use ($couponsService, $indexA, $indexed, $couponStranger, $promoVariant) {
+        $variable = new PointzVariable();
+        $strangerCart = makeCart($couponStranger, $promoVariant, 1);
+        $ownerCart = makeCart($indexed, $promoVariant, 1);
+
+        $stranger = $variable->couponError($indexA->code, $strangerCart);
+        $owner = $variable->couponError(strtolower($indexA->code), $ownerCart);
+        $unknown = $variable->couponError('NO-SUCH-' . $indexA->code, $ownerCart);
+        $fresh = $couponsService->getCouponById($indexA->id);
+
+        return $stranger === 'Coupon not valid.' && $owner === null && $unknown === 'Coupon not valid.'
+            && $strangerCart->couponCode === null && $ownerCart->couponCode === null && $fresh->status === 'active'
+            ?: json_encode(['stranger' => $stranger, 'owner' => $owner, 'unknown' => $unknown, 'cart' => $strangerCart->couponCode, 'status' => $fresh->status]);
+    });
+
+    check('a confirmed Campaign signup pays once, from the site, and an import source does not', function() use ($accounts, $storeId, $tag) {
+        // Campaign isn't in this harness: stand in its service class so the class-level handler
+        // registered by name can fire, with the event Campaign raises after a confirmed subscribe.
+        if (!class_exists('putyourlightson\campaign\services\FormsService')) {
+            eval('namespace putyourlightson\campaign\services; class FormsService extends \yii\base\Component {}');
+        }
+
+        $user = makeUser('campaign');
+        $rule = makeRule('campaignList', ['event' => Rule::EVENT_CUSTOM, 'eventHandle' => 'campaign:' . strtolower($tag) . '-club', 'rate' => 20]);
+        onlyRules([$rule]);
+
+        $fire = static function(string $sourceType) use ($user, $tag) {
+            $event = new class() extends yii\base\Event {
+                public object $contact;
+                public object $mailingList;
+                public string $sourceType = '';
+                public string $source = '';
+            };
+            $event->contact = (object)['email' => $user->email, 'userId' => null];
+            $event->mailingList = (object)['slug' => strtolower($tag) . '-club'];
+            $event->sourceType = $sourceType;
+            yii\base\Event::trigger('putyourlightson\campaign\services\FormsService', 'afterSubscribeContact', $event);
+        };
+
+        $balance = static function() use ($accounts, $user, $storeId) {
+            $accounts->clearMemo();
+
+            return $accounts->getAccount($user->id, $storeId)?->pointsBalance ?? 0.0;
+        };
+
+        $fire('import');
+        $afterImport = $balance();
+        $fire('web');
+        $afterVerify = $balance();
+        $fire('web');
+        $afterAgain = $balance();
+
+        return $afterImport == 0.0 && $afterVerify == 20.0 && $afterAgain == 20.0
+            ?: "import $afterImport, verify $afterVerify, again $afterAgain";
+    });
+
+    // ---------------------------------------------------------------------------------------
     section('Thresholds');
 
     check('a spending threshold buys a coupon each time the balance reaches it', function() use ($grants, $accounts, $couponsService, $ledger, $storeId) {
@@ -1918,6 +2087,27 @@ try {
 
         return $review;
     };
+
+    check('a review Stars imported never pays, on any save; the same review not imported does', function() use ($rewards, $accounts, $storeId) {
+        // Plain objects, as awardReview() reads them: this holds whatever Stars' schema is.
+        $user = makeUser('importedReviewer');
+        $rule = makeRule('reviewImported', ['event' => Rule::EVENT_REVIEW, 'rate' => 10]);
+        onlyRules([$rule]);
+        $review = static fn(int $id, ?string $batch) => (object)['id' => $id, 'reviewStatus' => 'approved', 'reviewerEmail' => $user->email, 'reviewText' => 'Good.', 'entryId' => null, 'importBatch' => $batch];
+        $balance = static function() use ($accounts, $user, $storeId) {
+            $accounts->clearMemo();
+
+            return $accounts->getAccount($user->id, $storeId)?->pointsBalance ?? 0.0;
+        };
+
+        $first = $rewards->awardReview($review(990000001, 'batch-1'));
+        $again = $rewards->awardReview($review(990000001, 'batch-1'));
+        $afterImport = $balance();
+        $native = $rewards->awardReview($review(990000002, null));
+
+        return $first === [] && $again === [] && $afterImport == 0.0 && count($native) === 1 && $balance() == 10.0
+            ?: json_encode(['first' => count($first), 'again' => count($again), 'import' => $afterImport, 'native' => count($native), 'balance' => $balance()]);
+    });
 
     check('an approved Stars review pays once, however often it is saved', function() use ($makeReview, $accounts, $storeId, $reviewClass) {
         if (!class_exists($reviewClass)) {
@@ -2244,6 +2434,30 @@ try {
 
         return $result['imported'] === 1 && count($schedule) === 2 && $nextInDays === 80
             ?: json_encode(['result' => $result, 'schedule' => count($schedule), 'next' => $nextInDays]);
+    });
+
+    check('a row’s own remindAfter column replaces --remind-after for that row, and 0 gives it none', function() use ($importer, $couponsService, $importA, $tag) {
+        makeLegacyDiscount('Row nag ' . $tag, ["rownag-$tag", "rowquiet-$tag", "rowdefault-$tag"], 20);
+        $issued = (new DateTime('-10 days'))->format('Y-m-d');
+        $result = $importer->importCoupons($importer->readCsv(writeCsv([
+            'code,user,issued,remindAfter',
+            "rownag-$tag,{$importA->id},$issued,30;60",
+            "rowquiet-$tag,{$importA->id},$issued,0",
+            "rowdefault-$tag,{$importA->id},$issued,",
+        ])), ['remindAfter' => [365]]);
+
+        $days = static function(string $code) use ($couponsService) {
+            $coupon = $couponsService->getCouponByCode($code);
+
+            return $coupon ? array_map(static fn(array $reminder) => (int)round(($reminder['date']->getTimestamp() - time()) / 86400), $coupon->getReminderSchedule()) : null;
+        };
+
+        $nag = $days("rownag-$tag");
+        $quiet = $days("rowquiet-$tag");
+        $default = $days("rowdefault-$tag");
+
+        return $result['imported'] === 3 && $nag === [20, 50] && $quiet === [] && $default === [355]
+            ?: json_encode(['result' => $result, 'nag' => $nag, 'quiet' => $quiet, 'default' => $default]);
     });
 
     check('a taken-over code is skipped on a second run, and once it expires the sweep deletes it and its discount', function() use ($importer, $couponsService, $commerce, $legacy, $importA, $tag) {
