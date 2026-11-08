@@ -85,7 +85,7 @@ class SweepController extends Controller
 
     /**
      * Deletes Commerce codes on Pointz's discounts that Pointz has no record of — left behind by
-     * customers deleted before 5.4.1, or by Craft's garbage collection. Part of `run` too.
+     * customers deleted before 5.5.0, or by Craft's garbage collection. Part of `run` too.
      */
     public function actionOrphanedCodes(): int
     {

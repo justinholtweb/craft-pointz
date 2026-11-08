@@ -117,6 +117,10 @@ class BalancesController extends Controller
         return $this->renderTemplate('pointz/balances/_detail', [
             'user' => $user,
             'account' => $account,
+            'membership' => $plugin->getMembership()->isEnabled() ? [
+                'isMember' => $plugin->getMembership()->isMember($user),
+                'record' => $plugin->getMembership()->getRecord($user),
+            ] : null,
             'store' => $store,
             'stores' => $stores->getAllStores(),
             'transactions' => $plugin->getLedger()->getTransactions([

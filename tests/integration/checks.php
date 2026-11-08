@@ -87,6 +87,8 @@ $createdRules = [];
 $createdOrders = [];
 $createdProducts = [];
 $createdDiscounts = [];
+$createdGroups = [];
+$createdPermissions = [];
 $tempFiles = [];
 
 function makeUser(string $key): User
@@ -155,6 +157,39 @@ function onlyRules(array $keep): void
     }
 
     $rulesService->clearMemo();
+}
+
+function makeGroup(string $key, array $permissions = []): craft\models\UserGroup
+{
+    global $createdGroups, $createdPermissions, $tag;
+
+    // Straight to the table: saving a group goes through project config, which this harness can't
+    // write. Craft reads groups from the table, so this is the group as far as anything can tell.
+    $uid = craft\helpers\StringHelper::UUID();
+    $now = craft\helpers\Db::prepareDateForDb(new DateTime());
+    craft\helpers\Db::insert(craft\db\Table::USERGROUPS, [
+        'name' => "$tag $key",
+        'handle' => strtolower($tag) . ucfirst($key),
+        'dateCreated' => $now,
+        'dateUpdated' => $now,
+        'uid' => $uid,
+    ]);
+    $group = Craft::$app->getUserGroups()->getGroupByUid($uid);
+    $createdGroups[] = $group->id;
+
+    foreach ($permissions as $name) {
+        $permissionId = (new Query())->select(['id'])->from(craft\db\Table::USERPERMISSIONS)->where(['name' => $name])->scalar();
+
+        if (!$permissionId) {
+            craft\helpers\Db::insert(craft\db\Table::USERPERMISSIONS, ['name' => $name, 'dateCreated' => $now, 'dateUpdated' => $now, 'uid' => craft\helpers\StringHelper::UUID()]);
+            $permissionId = (int)Craft::$app->getDb()->getLastInsertID();
+            $createdPermissions[] = $permissionId;
+        }
+
+        craft\helpers\Db::insert(craft\db\Table::USERPERMISSIONS_USERGROUPS, ['permissionId' => $permissionId, 'groupId' => $group->id, 'dateCreated' => $now, 'dateUpdated' => $now, 'uid' => craft\helpers\StringHelper::UUID()]);
+    }
+
+    return $group;
 }
 
 function makeProduct(string $sku, float $price, bool $promotable = false): Product
@@ -1975,6 +2010,186 @@ try {
     });
 
     // ---------------------------------------------------------------------------------------
+    section('Membership');
+
+    $membership = $plugin->getMembership();
+    $clubGroup = makeGroup('club');
+    $requiresClub = [
+        'class' => craft\elements\conditions\users\UserCondition::class,
+        'conditionRules' => [[
+            'class' => craft\elements\conditions\users\GroupConditionRule::class,
+            'operator' => 'in',
+            'values' => [$clubGroup->uid],
+        ]],
+    ];
+    $joined = [];
+    $left = [];
+    yii\base\Event::on(justinholtweb\pointz\services\Membership::class, justinholtweb\pointz\services\Membership::EVENT_AFTER_JOIN, static function($event) use (&$joined) {
+        $joined[] = [$event->user->id, $event->source];
+    });
+    yii\base\Event::on(justinholtweb\pointz\services\Membership::class, justinholtweb\pointz\services\Membership::EVENT_AFTER_LEAVE, static function($event) use (&$left) {
+        $left[] = [$event->user->id, $event->source];
+    });
+    $welcomeRule = makeRule('welcome', ['event' => Rule::EVENT_JOIN, 'rate' => 30, 'userCondition' => $requiresClub]);
+
+    check('with no member group chosen there is nothing to join', function() use ($membership, $settings) {
+        $settings->membershipGroup = null;
+        $user = makeUser('noclub');
+
+        return !$membership->join($user) && !$membership->isMember($user) && !$membership->isEnabled() ?: 'joined a programme that is off';
+    });
+
+    $settings->membershipGroup = $clubGroup->uid;
+
+    check('joining from the site puts the customer in the group, notes when, and pays the welcome reward', function() use ($membership, $welcomeRule, $accounts, $storeId, &$joined) {
+        onlyRules([$welcomeRule]);
+        $user = makeUser('joiner');
+        $joined = [];
+        $before = $membership->isMember($user);
+        $ok = $membership->join($user);
+        $accounts->clearMemo();
+        $balance = $accounts->getAccount($user->id, $storeId)?->pointsBalance ?? 0.0;
+        $record = $membership->getRecord($user);
+        $since = $membership->getMemberSince($user);
+
+        return !$before && $ok && $membership->isMember($user) && $balance == 30.0
+            && $record['source'] === 'site' && $since instanceof DateTime && abs($since->getTimestamp() - time()) < 120
+            && $joined === [[$user->id, 'site']]
+            ?: json_encode(['before' => $before, 'ok' => $ok, 'balance' => $balance, 'record' => $record, 'events' => $joined]);
+    });
+
+    check('joining again, or leaving and rejoining, pays nothing more; leaving notes the date', function() use ($membership, $welcomeRule, $accounts, $storeId, &$joined, &$left) {
+        onlyRules([$welcomeRule]);
+        $user = makeUser('rejoiner');
+        $membership->join($user);
+        $joined = [];
+        $left = [];
+        $membership->join($user);
+        $sameEvents = $joined;
+
+        $membership->leave($user);
+        $afterLeave = $membership->getRecord($user);
+        $memberAfterLeave = $membership->isMember($user);
+        $sinceAfterLeave = $membership->getMemberSince($user);
+
+        craft\helpers\Db::update(Table::MEMBERS, ['dateJoined' => craft\helpers\Db::prepareDateForDb(new DateTime('-30 days'))], ['userId' => $user->id]);
+        $membership->join($user);
+        $accounts->clearMemo();
+        $balance = $accounts->getAccount($user->id, $storeId)?->pointsBalance ?? 0.0;
+        $since = $membership->getMemberSince($user);
+
+        return $sameEvents === [] && !$memberAfterLeave && $afterLeave['dateLeft'] instanceof DateTime && $sinceAfterLeave === null
+            && $left === [[$user->id, 'site']] && count($joined) === 1
+            && $balance == 30.0 && $since !== null && abs($since->getTimestamp() - time()) < 120
+            ?: json_encode(['again' => $sameEvents, 'left' => $left, 'joined' => $joined, 'memberAfterLeave' => $memberAfterLeave, 'balance' => $balance]);
+    });
+
+    check('leaving keeps the customer’s other groups, and joining does too', function() use ($membership) {
+        $user = makeUser('grouped');
+        $other = makeGroup('other');
+        Craft::$app->getUsers()->assignUserToGroups($user->id, [$other->id]);
+        $membership->join($user);
+        $whileIn = array_map('intval', (new Query())->select(['groupId'])->from(craft\db\Table::USERGROUPS_USERS)->where(['userId' => $user->id])->column());
+        $membership->leave($user);
+        $after = array_map('intval', (new Query())->select(['groupId'])->from(craft\db\Table::USERGROUPS_USERS)->where(['userId' => $user->id])->column());
+        sort($whileIn);
+
+        return count($whileIn) === 2 && in_array($other->id, $whileIn, true) && $after === [$other->id] ?: json_encode(['in' => $whileIn, 'after' => $after]);
+    });
+
+    check('an admin ticking the group in the CP is a join too, and is paid', function() use ($membership, $welcomeRule, $accounts, $storeId, $clubGroup, &$joined) {
+        onlyRules([$welcomeRule]);
+        $user = makeUser('admined');
+        $joined = [];
+        Craft::$app->getUsers()->assignUserToGroups($user->id, [$clubGroup->id]);
+        $accounts->clearMemo();
+        $balance = $accounts->getAccount($user->id, $storeId)?->pointsBalance ?? 0.0;
+
+        return $membership->isMember($user) && $membership->getRecord($user)['source'] === 'admin' && $joined === [[$user->id, 'admin']] && $balance == 30.0
+            ?: json_encode(['record' => $membership->getRecord($user), 'events' => $joined, 'balance' => $balance]);
+    });
+
+    check('a registration that ticks the box joins with Craft’s default groups; one that doesn’t, doesn’t', function() use ($membership, $clubGroup) {
+        $consoleRequest = Craft::$app->getRequest();
+        $users = Craft::$app->getUsers();
+        $register = static function(?string $join) use ($consoleRequest, $users) {
+            $_SERVER['REQUEST_URI'] = '/actions/users/save-user';
+            $_SERVER['SCRIPT_NAME'] = '/index.php';
+            $_SERVER['HTTP_HOST'] = 'localhost';
+            $web = Craft::createObject(['class' => craft\web\Request::class, 'cookieValidationKey' => 'pointz-checks']);
+            $web->setIsConsoleRequest(false);
+            $web->setBodyParams($join === null ? [] : ['pointzJoin' => $join]);
+            Craft::$app->set('request', $web);
+
+            try {
+                $user = makeUser('reg' . ($join ?? 'none'));
+                $users->assignUserToDefaultGroup($user);
+
+                return $user;
+            } finally {
+                Craft::$app->set('request', $consoleRequest);
+            }
+        };
+
+        $ticked = $register('1');
+        $unticked = $register(null);
+        $notChecked = $register('');
+
+        return $membership->isMember($ticked) && $membership->getRecord($ticked)['source'] === 'registration'
+            && !$membership->isMember($unticked) && !$membership->isMember($notChecked)
+            ?: json_encode(['ticked' => $membership->getRecord($ticked), 'unticked' => $membership->isMember($unticked), 'empty' => $membership->isMember($notChecked)]);
+    });
+
+    check('a group that can reach the control panel is refused as the member group', function() use ($clubGroup) {
+        $staff = makeGroup('staff', ['accesscp']);
+        $refused = new Settings(['membershipGroup' => $staff->uid]);
+        $fine = new Settings(['membershipGroup' => $clubGroup->uid]);
+        $gone = new Settings(['membershipGroup' => craft\helpers\StringHelper::UUID()]);
+
+        return !$refused->validate(['membershipGroup']) && $fine->validate(['membershipGroup']) && !$gone->validate(['membershipGroup'])
+            ?: json_encode(['staff' => $refused->getErrors(), 'club' => $fine->getErrors(), 'gone' => $gone->getErrors()]);
+    });
+
+    check('craft.pointz.isMember() and memberSince() read the same as the service', function() use ($membership) {
+        $user = makeUser('twigmember');
+        $variable = new PointzVariable();
+        $before = $variable->isMember($user);
+        $membership->join($user);
+
+        return !$before && $variable->isMember($user) && $variable->memberSince($user) instanceof DateTime && $variable->membershipOpen()
+            ?: 'variable disagrees';
+    });
+
+    check('the join reward is Pro: Lite joins but pays nothing', function() use ($plugin, $membership, $welcomeRule, $accounts, $rulesService, $storeId) {
+        onlyRules([$welcomeRule]);
+        $plugin->edition = Plugin::EDITION_LITE;
+        $rulesService->clearMemo();
+
+        try {
+            $user = makeUser('litejoiner');
+            $membership->join($user);
+            $accounts->clearMemo();
+            $balance = $accounts->getAccount($user->id, $storeId)?->pointsBalance ?? 0.0;
+
+            return $membership->isMember($user) && $balance == 0.0 ?: "balance $balance";
+        } finally {
+            $plugin->edition = Plugin::EDITION_PRO;
+            $rulesService->clearMemo();
+        }
+    });
+
+    check('the settings screen offers the member group, and the balance screen compiles', function() use ($plugin, $settings, $clubGroup) {
+        $view = Craft::$app->getView();
+        $view->setTemplateMode(craft\web\View::TEMPLATE_MODE_CP);
+        $view->getTwig()->load('pointz/balances/_detail');
+        $html = $view->renderTemplate('pointz/settings', ['settings' => $settings, 'plugin' => $plugin]);
+
+        return str_contains($html, 'name="membershipGroup"') && str_contains($html, $clubGroup->uid) ?: 'no member group field';
+    });
+
+    $settings->membershipGroup = null;
+
+    // ---------------------------------------------------------------------------------------
     section('Thresholds');
 
     check('a spending threshold buys a coupon each time the balance reaches it', function() use ($grants, $accounts, $couponsService, $ledger, $storeId) {
@@ -2560,6 +2775,14 @@ try {
         if ($fresh) {
             $elements->deleteElement($fresh, true);
         }
+    }
+
+    if ($createdGroups) {
+        craft\helpers\Db::delete(craft\db\Table::USERGROUPS, ['id' => $createdGroups]);
+    }
+
+    if ($createdPermissions) {
+        craft\helpers\Db::delete(craft\db\Table::USERPERMISSIONS, ['id' => $createdPermissions]);
     }
 
     foreach ($tempFiles as $path) {

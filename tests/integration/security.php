@@ -116,7 +116,7 @@ function shopper(): array
     ])->getBody(), true) ?? [];
     $get = static fn(string $action, array $query = []) => json_decode((string)$http->get("index.php?p=actions/$action&" . http_build_query($query), ['headers' => $json])->getBody(), true) ?? [];
 
-    return [$post, $get];
+    return [$post, $get, $http];
 }
 
 $cartAdjustments = function(?string $number): array {
@@ -169,7 +169,7 @@ check('the customer’s balances are untouched', fn() => $balance(Rule::CURRENCY
 // -------------------------------------------------------------------------------------------
 echo "\nThe customer, signed in\n";
 
-[$ownPost, $ownGet] = shopper();
+[$ownPost, $ownGet, $ownHttp] = shopper();
 $signIn = $ownPost('users/login', ['loginName' => $victim->username, 'password' => $password]);
 $ownCart = $ownPost('commerce/cart/update-cart', ['purchasableId' => $variantId, 'qty' => 1]);
 $ownNumber = $ownCart['cart']['number'] ?? null;
@@ -229,6 +229,56 @@ check('a redemption someone else made is never charged to the customer', functio
     return $written === [] && $balance(Rule::CURRENCY_POINTS) == $before && $order->getNotices() !== []
         ? true
         : 'written ' . count($written) . ", points $before → " . $balance(Rule::CURRENCY_POINTS);
+});
+
+// -------------------------------------------------------------------------------------------
+echo "\nJoining the loyalty programme\n";
+
+// A member group, and the web server told about it through a config file — the settings live in
+// project config, which this harness can't write.
+$clubUid = craft\helpers\StringHelper::UUID();
+$now = Db::prepareDateForDb(new DateTime());
+Db::insert(craft\db\Table::USERGROUPS, ['name' => "Pointz club $run", 'handle' => "pointzClub$run", 'dateCreated' => $now, 'dateUpdated' => $now, 'uid' => $clubUid]);
+$clubId = (int)(new Query())->select(['id'])->from(craft\db\Table::USERGROUPS)->where(['uid' => $clubUid])->scalar();
+$configFile = Craft::$app->getPath()->getConfigPath() . '/pointz.php';
+$hadConfig = file_exists($configFile);
+$hadConfig || file_put_contents($configFile, "<?php\nreturn ['membershipGroup' => '$clubUid'];\n");
+register_shutdown_function(function() use ($clubId, $configFile, $hadConfig) {
+    $hadConfig || @unlink($configFile);
+    Db::delete(craft\db\Table::USERGROUPS, ['id' => $clubId]);
+});
+$inClub = static fn(int $userId) => (new Query())->from(craft\db\Table::USERGROUPS_USERS)->where(['userId' => $userId, 'groupId' => $clubId])->exists();
+
+check('a guest can’t join', function() use ($victim, $inClub) {
+    [$post] = shopper();
+    $response = $post('pointz/membership/join', ['userId' => $victim->id]);
+
+    return ($response['success'] ?? false) !== true && !$inClub($victim->id) ?: json_encode($response);
+});
+
+check('a GET, or a POST without the CSRF token, doesn’t join the customer', function() use ($ownHttp, $victim, $inClub) {
+    $get = $ownHttp->get('index.php?p=actions/pointz/membership/join', ['headers' => ['Accept' => 'application/json']]);
+    $noToken = $ownHttp->post('index.php?p=actions/pointz/membership/join', ['headers' => ['Accept' => 'application/json'], 'form_params' => ['x' => 1]]);
+
+    return $get->getStatusCode() >= 400 && $noToken->getStatusCode() >= 400 && !$inClub($victim->id)
+        ?: 'GET ' . $get->getStatusCode() . ', no token ' . $noToken->getStatusCode();
+});
+
+check('the signed-in customer joins themselves — and only themselves, whatever they post', function() use ($ownPost, $victim, $inClub, $run, &$users) {
+    $bystander = new User(['username' => "pointz-bystander-$run", 'email' => "pointz-bystander-$run@example.com"]);
+    Craft::$app->getElements()->saveElement($bystander, false);
+    $users[] = $bystander;
+
+    $response = $ownPost('pointz/membership/join', ['userId' => $bystander->id]);
+
+    return ($response['success'] ?? null) === true && ($response['isMember'] ?? null) === true && $inClub($victim->id) && !$inClub($bystander->id)
+        ?: json_encode($response);
+});
+
+check('and can leave again', function() use ($ownPost, $victim, $inClub) {
+    $response = $ownPost('pointz/membership/leave', []);
+
+    return ($response['success'] ?? null) === true && ($response['isMember'] ?? null) === false && !$inClub($victim->id) ?: json_encode($response);
 });
 
 echo "\n$passed passed, $failed failed\n";

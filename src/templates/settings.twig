@@ -76,6 +76,26 @@
 
 <hr>
 
+<h2>{{ "Membership"|t('pointz') }}</h2>
+
+{% set groupOptions = [{ value: '', label: "Everyone — no sign-up needed"|t('pointz') }] %}
+{% for group in craft.app.userGroups.getAllGroups() %}
+    {% set groupOptions = groupOptions|merge([{ value: group.uid, label: group.name }]) %}
+{% endfor %}
+
+{{ forms.selectField({
+    label: "Member group"|t('pointz'),
+    instructions: "For an opt-in programme. Customers join this group with a “Join” button (`pointz/membership/join`) or a box on the registration form (`pointzJoin`), and leave it with `pointz/membership/leave`. Give your earning rules a user condition that requires it so only members earn, and pay a welcome reward with a rule on “Joining the loyalty programme”. Customers put themselves in this group, so pick one that grants nothing — a group with control panel access is refused."|t('pointz'),
+    id: 'membershipGroup',
+    name: 'membershipGroup',
+    options: groupOptions,
+    value: settings.membershipGroup,
+    errors: settings.getErrors('membershipGroup'),
+    warning: groupOptions|length == 1 ? "There are no user groups yet. User groups need Craft Pro."|t('pointz') : null
+}) }}
+
+<hr>
+
 <h2>{{ "Redeeming"|t('pointz') }}</h2>
 
 {{ forms.lightswitchField({

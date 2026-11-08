@@ -27,6 +27,7 @@ class Install extends Migration
         $this->createIndexes();
         $this->addForeignKeys();
         self::createCouponsTable($this);
+        self::createMembersTable($this);
         $this->seedDefaultRules();
 
         return true;
@@ -38,6 +39,7 @@ class Install extends Migration
     public function safeDown(): bool
     {
         // Children first: uses point at lots, lots at transactions, transactions at rules.
+        $this->dropTableIfExists(Table::MEMBERS);
         $this->dropTableIfExists(Table::COUPONS);
         $this->dropTableIfExists(Table::LOT_USES);
         $this->dropTableIfExists(Table::LOTS);
@@ -308,6 +310,29 @@ class Install extends Migration
         $migration->addForeignKey(null, Table::COUPONS, ['couponId'], self::COMMERCE_COUPONS, ['id'], 'SET NULL', null);
         $migration->addForeignKey(null, Table::COUPONS, ['transactionId'], Table::TRANSACTIONS, ['id'], 'SET NULL', null);
         $migration->addForeignKey(null, Table::COUPONS, ['orderId'], self::COMMERCE_ORDERS, ['id'], 'SET NULL', null);
+    }
+
+    /**
+     * Who joined the loyalty programme and when. Membership itself is the user group chosen in the
+     * settings — that is what a rule's user condition reads — and this is only the history a group
+     * can't keep: when they joined, how, and when they left. Shared by the install and the 5.5
+     * migration.
+     */
+    public static function createMembersTable(Migration $migration): void
+    {
+        $migration->createTable(Table::MEMBERS, [
+            'id' => $migration->primaryKey(),
+            'userId' => $migration->integer()->notNull(),
+            'source' => $migration->string(16)->notNull()->defaultValue('site'),
+            'dateJoined' => $migration->dateTime()->notNull(),
+            'dateLeft' => $migration->dateTime(),
+            'dateCreated' => $migration->dateTime()->notNull(),
+            'dateUpdated' => $migration->dateTime()->notNull(),
+            'uid' => $migration->uid(),
+        ]);
+
+        $migration->createIndex(null, Table::MEMBERS, ['userId'], true);
+        $migration->addForeignKey(null, Table::MEMBERS, ['userId'], CraftTable::USERS, ['id'], 'CASCADE', null);
     }
 
     /**

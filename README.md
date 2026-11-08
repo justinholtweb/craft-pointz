@@ -2,7 +2,7 @@
 
 Loyalty points and store credit for Craft Commerce 5. Earning rules a merchandiser can write, a
 ledger that expires and reverses correctly, and redemption at checkout that never spends anything
-until the order completes. Customers can also be rewarded for reviews, birthdays, signups and
+until the order completes. Customers can also be rewarded for joining the club, reviews, birthdays, signups and
 milestones, with points, credit or single-use coupons.
 
 WooCommerce shops have had *Points and Rewards* for a decade. Craft has had gift vouchers and
@@ -46,6 +46,7 @@ start paying out on a live store before anyone has read the numbers.
 | One earning rule per store | ✅ | ✅ |
 | Rate-per-value and fixed awards | ✅ | ✅ |
 | Signup bonus | ✅ | ✅ |
+| An opt-in programme: join from the site or at registration, `craft.pointz.isMember()` | ✅ | ✅ |
 | Redeem points at checkout — rate, minimum, block size, cap | ✅ | ✅ |
 | Balances, ledger and manual grants | ✅ | ✅ |
 | Holds, and refund reversal | ✅ | ✅ |
@@ -61,7 +62,7 @@ start paying out on a live store before anyone has read the numbers.
 | Backfill with a dry run and an undo | | ✅ |
 | Ledger CSV export | | ✅ |
 | Liability dashboard widget | | ✅ |
-| Rewards for an approved review (Stars), a birthday, a points milestone, or a custom event from Formie, Dispatch, Campaign or your own code | | ✅ |
+| Rewards for joining the programme, an approved review (Stars), a birthday, a points milestone, or a custom event from Formie, Dispatch, Campaign or your own code | | ✅ |
 | **Coupons as a reward**: single-use, one customer, optional expiry and reminder email, one Commerce discount per rule | | ✅ |
 | A coupons index with search and revoke, and test sends of the coupon emails | | ✅ |
 
@@ -83,6 +84,7 @@ not an upsell.
 | Rule | Earned for | Awards |
 | --- | --- | --- |
 | Welcome | A Formie newsletter signup | A 10% coupon, valid 30 days |
+| Welcome to the club | Joining the loyalty programme | 200 points |
 | Thanks for the review | An approved review with text, of something they bought | 10 points |
 | Happy birthday | The customer's birthday | A 15% coupon, valid 90 days, reminder 14 days before |
 | Club reward | Reaching 500 points, spending them | €5 of store credit |

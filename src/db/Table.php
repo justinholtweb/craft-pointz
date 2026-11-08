@@ -14,4 +14,5 @@ abstract class Table
     public const RULES = '{{%pointz_rules}}';
     public const CART_REDEMPTIONS = '{{%pointz_cart_redemptions}}';
     public const COUPONS = '{{%pointz_coupons}}';
+    public const MEMBERS = '{{%pointz_members}}';
 }

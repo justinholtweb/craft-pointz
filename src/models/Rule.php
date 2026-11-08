@@ -33,6 +33,7 @@ class Rule extends Model
     public const EVENT_BIRTHDAY = 'birthday';
     public const EVENT_THRESHOLD = 'threshold';
     public const EVENT_CUSTOM = 'custom';
+    public const EVENT_JOIN = 'join';
 
     public const SCOPE_ORDER = 'order';
     public const SCOPE_LINE_ITEM = 'lineItem';
@@ -182,6 +183,7 @@ class Rule extends Model
         return [
             self::EVENT_ORDER => Craft::t('pointz', 'A completed order'),
             self::EVENT_SIGNUP => Craft::t('pointz', 'A new customer account'),
+            self::EVENT_JOIN => Craft::t('pointz', 'Joining the loyalty programme'),
             self::EVENT_REVIEW => Craft::t('pointz', 'An approved review (Stars)'),
             self::EVENT_BIRTHDAY => Craft::t('pointz', 'A customer’s birthday'),
             self::EVENT_THRESHOLD => Craft::t('pointz', 'Reaching a points balance'),
@@ -196,7 +198,7 @@ class Rule extends Model
      */
     public static function proEvents(): array
     {
-        return [self::EVENT_REVIEW, self::EVENT_BIRTHDAY, self::EVENT_THRESHOLD, self::EVENT_CUSTOM];
+        return [self::EVENT_REVIEW, self::EVENT_BIRTHDAY, self::EVENT_THRESHOLD, self::EVENT_CUSTOM, self::EVENT_JOIN];
     }
 
     /**

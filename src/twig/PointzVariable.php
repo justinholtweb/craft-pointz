@@ -326,6 +326,31 @@ class PointzVariable
         return Plugin::getInstance()->getRules()->getActiveRules($storeId, $event);
     }
 
+    /**
+     * Whether the customer is in the loyalty programme — the member group chosen in the settings.
+     * False for everyone when no group is chosen.
+     */
+    public function isMember(User|int|null $user = null): bool
+    {
+        return Plugin::getInstance()->getMembership()->isMember($this->_userId($user));
+    }
+
+    /**
+     * When a current member joined, or null.
+     */
+    public function memberSince(User|int|null $user = null): ?\DateTime
+    {
+        return Plugin::getInstance()->getMembership()->getMemberSince($this->_userId($user));
+    }
+
+    /**
+     * Whether there is a programme to join: a member group is chosen in the settings.
+     */
+    public function membershipOpen(): bool
+    {
+        return Plugin::getInstance()->getMembership()->isEnabled();
+    }
+
     private function _userId(User|int|null $user): ?int
     {
         if ($user instanceof User) {

@@ -82,6 +82,7 @@ What a rule hands out depends on the trigger:
 | --- | --- | --- | --- |
 | A completed order | ✅ | ✅ | |
 | A new customer account | ✅ | ✅ | ✅ |
+| Joining the loyalty programme | ✅ | ✅ | ✅ |
 | An approved review (Stars) | ✅ | ✅ | ✅ |
 | A customer's birthday | ✅ | ✅ | ✅ |
 | Reaching a points balance | | ✅ | ✅ |
@@ -93,6 +94,14 @@ For anything but an order, **Rate** is simply the amount to award.
 
 Fires when a user is created. In Lite this is the one non-order trigger, and it awards points.
 Pro adds store credit and coupons, so a welcome coupon is one rule.
+
+### Joining the loyalty programme
+
+Fires when a customer joins the member group (see [An opt-in programme](#an-opt-in-programme)),
+whichever way they joined: from the site, at registration, or by an admin ticking the group in the
+control panel. Each rule pays a customer once ever, so leaving and joining again pays nothing
+more. The customer is already in the group when the rule runs, so a rule that requires the group
+matches.
 
 ### A custom event
 
@@ -198,6 +207,51 @@ a refund handing points back, or a hold being released.
 
 If the reward can't be issued, the debit is returned. For tiers, put the higher rule first and
 switch on *stop after this one*: a customer reaching 100 gets the 20% coupon, not both.
+
+## An opt-in programme
+
+Many clubs are opt-in: a customer presses *Join the club* and only members earn. Pointz treats a
+**user group** as the club. Choose it under **Settings → Membership**, then:
+
+- give your earning rules a customer condition that requires the group, so only members earn
+  *(Pro: conditions)*;
+- pay a welcome reward with a rule on **Joining the loyalty programme** *(Pro)*;
+- put a join button on the account page:
+
+```twig
+{% if craft.pointz.isMember() %}
+    <p>Member since {{ craft.pointz.memberSince()|date }} — {{ craft.pointz.formatted(craft.pointz.balance()) }}</p>
+    <form method="post">
+        {{ csrfInput() }}
+        {{ actionInput('pointz/membership/leave') }}
+        <button>Leave the club</button>
+    </form>
+{% elseif craft.pointz.membershipOpen() %}
+    <form method="post">
+        {{ csrfInput() }}
+        {{ actionInput('pointz/membership/join') }}
+        {{ redirectInput('account') }}
+        <button>Join the club</button>
+    </form>
+{% endif %}
+```
+
+To join at registration, add a checkbox named `pointzJoin` to Craft's `users/save-user` form:
+
+```twig
+<label><input type="checkbox" name="pointzJoin" value="1"> Join the club</label>
+```
+
+Pointz adds the group to the new user's default groups, so it needs Craft's public registration,
+which needs Craft Pro (user groups do too).
+
+Joining is a change to the group, and Pointz listens to every change to it. A join from the site,
+the registration box and an admin ticking the group in the control panel are all recorded,
+announced (`Membership::EVENT_AFTER_JOIN`) and rewarded the same way. The customer's balance page
+shows when they joined and how. Customers put themselves in this group, so a group that can reach
+the control panel is refused.
+
+Membership itself is in Lite. The welcome reward and customer conditions are Pro.
 
 ## Coupons as a reward *(Pro)*
 
@@ -368,6 +422,7 @@ php craft pointz/sweep/inactive
 php craft pointz/sweep/expiring 30      # what is about to expire, and whose
 php craft pointz/sweep/birthdays        # Pro
 php craft pointz/sweep/coupons          # expire, remind, clean up discounts
+php craft pointz/sweep/orphaned-codes   # delete codes left on Pointz discounts by deleted customers
 
 # Rebuild every cached balance from the lots. Harmless; run it after a restore.
 php craft pointz/accounts/recalculate

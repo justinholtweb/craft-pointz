@@ -1,6 +1,22 @@
 # Release Notes for Pointz
 
-## Unreleased
+## 5.5.0 - Unreleased
+
+### Added
+
+- **An opt-in programme.** Choose a user group under **Settings → Membership** and customers join
+  it with `pointz/membership/join` (and leave with `…/leave`), signed in, by POST, or by ticking a
+  `pointzJoin` box on Craft's registration form. A rule's customer condition that requires the
+  group makes only members earn. Membership is in Lite.
+  ([#3](https://github.com/justinholtweb/craft-pointz/issues/3))
+- **Joining the loyalty programme** as a rule trigger *(Pro)*: a welcome reward of points, credit
+  or a coupon, paid once per customer ever. It pays however the customer got into the group,
+  including an admin ticking it in the control panel.
+- `craft.pointz.isMember()`, `craft.pointz.memberSince()` and `craft.pointz.membershipOpen()`.
+- `Membership::EVENT_AFTER_JOIN` and `EVENT_AFTER_LEAVE`, with the `source` of the change
+  (`site`, `registration` or `admin`), for subscribing a new member to a list or sending your own
+  welcome email.
+- The customer's balance page shows when they joined, how, or when they left.
 
 ### Fixed
 

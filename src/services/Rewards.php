@@ -221,6 +221,25 @@ class Rewards extends Component
     }
 
     /**
+     * The welcome reward for joining the loyalty programme: every active rule on the join trigger,
+     * in precedence order, each paid once per customer ever — leaving and rejoining pays nothing
+     * more. Called by `Membership` once the customer is in the group, so a rule that requires the
+     * member group matches. Pro, like the other rewards that are not an order.
+     *
+     * @return array<int, Transaction|Coupon>
+     */
+    public function awardJoin(User $user, ?string $source = null, ?int $storeId = null): array
+    {
+        $storeId ??= $this->_primaryStoreId();
+
+        if ($storeId === null) {
+            return [];
+        }
+
+        return $this->awardForEvent(Rule::EVENT_JOIN, $user, $storeId, null, ['source' => $source]);
+    }
+
+    /**
      * Whether Pointz is creating an account for an event right now. The signup bonus is for people
      * who sign up, not for an address Pointz made an account for, so it stands aside.
      */
@@ -692,6 +711,7 @@ class Rewards extends Component
     {
         return match ($event) {
             Rule::EVENT_SIGNUP => Craft::t('pointz', 'Welcome bonus: {rule}', ['rule' => $rule->name]),
+            Rule::EVENT_JOIN => Craft::t('pointz', 'Joined the programme: {rule}', ['rule' => $rule->name]),
             Rule::EVENT_REVIEW => Craft::t('pointz', 'Review reward: {rule}', ['rule' => $rule->name]),
             Rule::EVENT_BIRTHDAY => Craft::t('pointz', 'Birthday reward: {rule}', ['rule' => $rule->name]),
             default => $rule->name,

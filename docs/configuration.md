@@ -19,6 +19,12 @@ numbers for the site.
 | **Guest checkouts earn** | Commerce gives every order a customer account, so a guest's points wait for them to activate it. Off means guests earn nothing at all. |
 | **Earn on value paid with points or credit** | Off by default. Paying with points and then earning points on the same money is a loop the store funds twice. |
 
+## Membership
+
+| Setting | What it does |
+| --- | --- |
+| **Member group** | The user group that is your loyalty programme, for a club customers opt into. Customers join and leave it with `pointz/membership/join` and `…/leave`, or with a `pointzJoin` box on the registration form. *Everyone* (the default) turns the join actions off. A group with control panel access is refused, because customers put themselves in it. See [An opt-in programme](usage.md#an-opt-in-programme). |
+
 ## Redeeming
 
 | Setting | What it does |

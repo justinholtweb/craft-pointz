@@ -169,6 +169,15 @@ class Settings extends Model
     public bool $earnAsGuest = true;
 
     /**
+     * @var string|null The UID of the user group that is the loyalty programme. Customers join and
+     *                  leave it from the site with `pointz/membership/join` and `…/leave`, or at
+     *                  registration; a rule's user condition can then require it. Null means the
+     *                  programme is open to everyone and the join actions are off. A group that
+     *                  can reach the control panel is refused: customers put themselves in it.
+     */
+    public ?string $membershipGroup = null;
+
+    /**
      * @var int Seconds to wait for an account's lock before giving up.
      */
     public int $lockTimeout = 5;
@@ -252,11 +261,40 @@ class Settings extends Model
             [['sweepBatchSize'], 'integer', 'min' => 1, 'max' => 5000],
             [['pointsLabel', 'pointsLabelPlural', 'creditLabel'], 'string', 'max' => 60],
             [['awardOnStatus'], 'validateAwardStatus', 'skipOnEmpty' => false],
+            [['membershipGroup'], 'validateMembershipGroup'],
             [['expireAfterDays'], 'validateExpiry', 'skipOnEmpty' => false],
             // Never `required`: a fresh install has to be able to save the settings screen before
             // every field on it has been thought about.
             [['awardOnStatus'], 'safe'],
         ];
+    }
+
+    /**
+     * Customers add themselves to this group, so it must not grant the control panel — or any
+     * permission at all worth having. CP access is the line Pointz enforces; anything else the
+     * group carries is the store's own decision.
+     */
+    public function validateMembershipGroup(string $attribute): void
+    {
+        if (!$this->membershipGroup) {
+            $this->membershipGroup = null;
+
+            return;
+        }
+
+        $group = Craft::$app->getUserGroups()->getGroupByUid($this->membershipGroup);
+
+        if ($group === null) {
+            $this->addError($attribute, Craft::t('pointz', 'That user group no longer exists.'));
+
+            return;
+        }
+
+        $permissions = Craft::$app->getUserPermissions()->getPermissionsByGroupId($group->id);
+
+        if (in_array('accesscp', $permissions, true)) {
+            $this->addError($attribute, Craft::t('pointz', 'Customers put themselves in this group, so it can’t be one that has access to the control panel.'));
+        }
     }
 
     public function validateAwardStatus(string $attribute): void
@@ -280,6 +318,7 @@ class Settings extends Model
     {
         return [
             'earningEnabled' => Craft::t('pointz', 'Award points on completed orders'),
+            'membershipGroup' => Craft::t('pointz', 'Member group'),
             'awardOn' => Craft::t('pointz', 'Award when'),
             'earnOnRedeemedValue' => Craft::t('pointz', 'Earn on value paid with points or credit'),
             'awardOnStatus' => Craft::t('pointz', 'Releasing status'),

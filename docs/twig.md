@@ -23,6 +23,15 @@ craft.pointz.ledger(25)                   {# the customer's history, newest firs
 craft.pointz.expiring(30)                 {# what is about to expire, and when #}
 ```
 
+### Membership
+
+```twig
+craft.pointz.membershipOpen()             {# a member group is chosen in the settings #}
+craft.pointz.isMember()                   {# in the member group #}
+craft.pointz.isMember(user)
+craft.pointz.memberSince()                {# when they joined, or null #}
+```
+
 ### Redeeming
 
 ```twig
@@ -106,6 +115,11 @@ craft.pointz.isPro
 | `pointz/cart/redeem` | `points`, `credit` (either may be `max`) | JSON with `success`, `message`, `quote`; or a redirect with a flash. Needs the cart's customer to be signed in. |
 | `pointz/cart/remove` | — | The same |
 | `pointz/cart/quote` | `points`, `credit` as query params | JSON `quote`, applying nothing |
+| `pointz/membership/join` | — | JSON with `success`, `message`, `isMember`, `memberSince`; or a redirect with a flash. Signed-in customers only, on themselves. |
+| `pointz/membership/leave` | — | The same |
+
+On Craft's own `users/save-user`, a `pointzJoin` body param of `1` joins the new customer at
+registration.
 
 ## Events
 
@@ -204,6 +218,25 @@ Event::on(
     function(CouponEvent $event) {
         MyMailer::send($event->user, 'coupon-expiring', ['code' => $event->coupon->code]);
         $event->isValid = false;
+    }
+);
+```
+
+### When someone joins or leaves
+
+`Membership::EVENT_AFTER_JOIN` and `Membership::EVENT_AFTER_LEAVE` fire once per join or leave,
+however it happened. `$event->source` is `site`, `registration` or `admin` (the group was assigned
+outside Pointz). By the time the join event fires, any welcome reward has been paid.
+
+```php
+use justinholtweb\pointz\events\MembershipEvent;
+use justinholtweb\pointz\services\Membership;
+
+Event::on(
+    Membership::class,
+    Membership::EVENT_AFTER_JOIN,
+    function(MembershipEvent $event) {
+        MyNewsletter::subscribe($event->user->email, 'club');
     }
 );
 ```

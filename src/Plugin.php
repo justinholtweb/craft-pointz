@@ -15,6 +15,7 @@ use craft\commerce\services\OrderHistories;
 use craft\commerce\services\Transactions as CommerceTransactions;
 use craft\elements\User;
 use craft\events\DefineRulesEvent;
+use craft\events\DefineUserGroupsEvent;
 use craft\events\ElementEvent;
 use craft\events\ExecuteGqlQueryEvent;
 use craft\events\ModelEvent;
@@ -25,6 +26,7 @@ use craft\events\RegisterGqlQueriesEvent;
 use craft\events\RegisterGqlSchemaComponentsEvent;
 use craft\events\RegisterUrlRulesEvent;
 use craft\events\RegisterUserPermissionsEvent;
+use craft\events\UserGroupsAssignEvent;
 use craft\helpers\UrlHelper;
 use craft\services\Dashboard;
 use craft\services\Elements;
@@ -32,6 +34,7 @@ use craft\services\Gc;
 use craft\services\Gql;
 use craft\services\SystemMessages;
 use craft\services\UserPermissions;
+use craft\services\Users;
 use craft\web\twig\variables\CraftVariable;
 use craft\web\UrlManager;
 use justinholtweb\pointz\adjusters\Redemption as RedemptionAdjuster;
@@ -50,6 +53,7 @@ use justinholtweb\pointz\services\Grants;
 use justinholtweb\pointz\services\Import;
 use justinholtweb\pointz\services\Ledger;
 use justinholtweb\pointz\services\Lifecycle;
+use justinholtweb\pointz\services\Membership;
 use justinholtweb\pointz\services\Redemption;
 use justinholtweb\pointz\services\Rewards;
 use justinholtweb\pointz\services\Rules;
@@ -81,7 +85,7 @@ class Plugin extends BasePlugin
     public const EDITION_LITE = 'lite';
     public const EDITION_PRO = 'pro';
 
-    public string $schemaVersion = '5.3.0';
+    public string $schemaVersion = '5.5.0';
     public bool $hasCpSettings = true;
     public bool $hasCpSection = true;
 
@@ -114,6 +118,7 @@ class Plugin extends BasePlugin
                 'coupons' => ['class' => Coupons::class],
                 'rewards' => ['class' => Rewards::class],
                 'import' => ['class' => Import::class],
+                'membership' => ['class' => Membership::class],
             ],
         ];
     }
@@ -130,6 +135,7 @@ class Plugin extends BasePlugin
         $this->_registerRoutes();
         $this->_registerWidgets();
         $this->_registerSystemMessages();
+        $this->_registerMembership();
 
         // Pointz can be installed while Commerce is disabled or mid-upgrade, and everything below
         // reaches for classes that would not be there.
@@ -219,6 +225,11 @@ class Plugin extends BasePlugin
     public function getImport(): Import
     {
         return $this->get('import');
+    }
+
+    public function getMembership(): Membership
+    {
+        return $this->get('membership');
     }
 
     /**
@@ -560,6 +571,36 @@ class Plugin extends BasePlugin
                 } catch (\Throwable $e) {
                     Craft::error('Pointz could not award the signup bonus: ' . $e->getMessage(), 'pointz');
                 }
+            }
+        );
+    }
+
+    /**
+     * Joining and leaving the loyalty programme. Every way in or out of the member group — the
+     * site's join button, the registration box, an admin in the CP — goes through
+     * `assignUserToGroups()`, so this one listener records all of them. Registered without
+     * Commerce: membership is a Craft matter, and only the welcome reward needs a store.
+     */
+    private function _registerMembership(): void
+    {
+        Event::on(
+            Users::class,
+            Users::EVENT_AFTER_ASSIGN_USER_TO_GROUPS,
+            static function(UserGroupsAssignEvent $event) {
+                // The group change has committed; Pointz's note of it must not fail a user save.
+                try {
+                    Plugin::getInstance()->getMembership()->handleGroupsAssigned($event);
+                } catch (\Throwable $e) {
+                    Craft::error("Pointz could not record a membership change for user $event->userId: " . $e->getMessage(), 'pointz');
+                }
+            }
+        );
+
+        Event::on(
+            Users::class,
+            Users::EVENT_DEFINE_DEFAULT_USER_GROUPS,
+            static function(DefineUserGroupsEvent $event) {
+                Plugin::getInstance()->getMembership()->handleDefaultGroups($event);
             }
         );
     }

@@ -30,6 +30,27 @@
             <div class="light smalltext">{{ "Lifetime"|t('pointz') }}</div>
             <div style="font-size: 26px;">{{ plugin.redemption.format(account.lifetimePoints) }}</div>
         </div>
+        {% if membership %}
+            {% set record = membership.record %}
+            {% set current = membership.isMember and record and not record.dateLeft %}
+            <div>
+                <div class="light smalltext">{{ current ? "Member since"|t('pointz') : "Loyalty programme"|t('pointz') }}</div>
+                <div style="font-size: 26px;">
+                    {%- if current %}{{ record.dateJoined|date('short') }}
+                    {%- elseif membership.isMember %}{{ "Member"|t('pointz') }}
+                    {%- else %}{{ "Not a member"|t('pointz') }}{% endif -%}
+                </div>
+                {% if current %}
+                    <div class="light smalltext">{{ {
+                        site: "Joined on the site"|t('pointz'),
+                        registration: "Joined at registration"|t('pointz'),
+                        admin: "Added to the group directly"|t('pointz'),
+                    }[record.source] ?? record.source }}</div>
+                {% elseif not membership.isMember and record and record.dateLeft %}
+                    <div class="light smalltext">{{ "Left {date}"|t('pointz', { date: record.dateLeft|date('short') }) }}</div>
+                {% endif %}
+            </div>
+        {% endif %}
     </div>
 
     {% if canAdjust %}

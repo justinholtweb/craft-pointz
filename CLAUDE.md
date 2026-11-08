@@ -46,6 +46,8 @@ Anything that cannot survive that rule does not ship.
 | Refund saved | `Transactions::EVENT_AFTER_SAVE_TRANSACTION` | Reverse pro rata; optionally return what the order spent. |
 | New user | `User::EVENT_AFTER_PROPAGATE` with `isNew` | The signup bonus. |
 | User hard-deleted | `User::EVENT_BEFORE_DELETE` + `Elements::EVENT_AFTER_DELETE_ELEMENT` | Note the user's Commerce codes before the cascade, delete them after the commit. Soft deletes are left alone. |
+| Group assigned | `Users::EVENT_AFTER_ASSIGN_USER_TO_GROUPS` | `Membership::handleGroupsAssigned()`: the one place a join or leave of the member group is recorded, rewarded (`Rewards::awardJoin()`) and announced. |
+| Registration | `Users::EVENT_DEFINE_DEFAULT_USER_GROUPS` | A site request posting `pointzJoin` gets the member group added to Craft's default groups. |
 | GC runs | `Gc::EVENT_RUN` | `pruneOrphanedCodes()`: GC hard-deletes trashed users with a plain `DELETE`, no element event. |
 | Points arrive | `Ledger::EVENT_AFTER_COMMIT` (and `Lifecycle::_release()`) | Evaluate threshold rules. *After the commit*, because a threshold spends and the ledger can't be re-entered from inside its own lock. |
 | Discount matches | `Discounts::EVENT_DISCOUNT_MATCHES_ORDER` | A Pointz coupon code only matches its owner's order, and only while live. |
@@ -62,7 +64,7 @@ own previous output — which is what stops the discount compounding.
 
 ### Data model
 
-Seven tables, all hard deletes:
+Eight tables, all hard deletes:
 
 - `pointz_accounts` — (storeId, userId) unique. A cache; rebuildable.
 - `pointz_transactions` — the append-only ledger. Signed `amount`, `balanceAfter` for support
@@ -75,6 +77,8 @@ Seven tables, all hard deletes:
 - `pointz_coupons` — every code Pointz issued: owner, rule, Commerce `discountId`/`couponId`,
   `type` and `amount` as issued, `status` (active/used/expired/revoked), `dateExpires`,
   `dateRemind`. The code is copied here because Commerce's row is deleted when a code expires.
+- `pointz_members` — one row per user who ever joined the programme: `source`, `dateJoined`,
+  `dateLeft`. History only; membership itself is the group.
 
 Rules live in the **database, not project config**, the same call Commerce makes for its own
 discounts and shipping rules: they are commercial configuration a merchandiser changes on a Friday
@@ -127,6 +131,22 @@ A custom-event rule with `createAccount` on lets `awardEvent()` take an email no
 account for: `Rewards::_createAccountFor()` calls Craft's `ensureUserByEmail()` (an inactive user,
 which Craft's registration later reuses) only if a matching active rule asks. The signup hook
 checks `Rewards::isCreatingAccount()` and stands aside, so a subscriber isn't paid a signup bonus.
+
+### Membership is a user group
+
+An opt-in programme is the user group in `Settings::$membershipGroup` (a UID), because that is
+what a rule's user condition already reads. **Every way in or out goes through
+`assignUserToGroups()`**, and Pointz listens to its after event: `Membership::join()`/`leave()`
+only change the group, with a `_source` set for the listener to read. That's why an admin ticking
+the group in the CP is a join (`source = admin`) and pays the welcome reward too.
+
+Registration can't add the group after the user saves: Craft's `assignUserToDefaultGroup()`
+assigns the default groups as the *whole* list at the end of `users/save-user` and would take it
+away again. So `pointzJoin` works by adding the group to `EVENT_DEFINE_DEFAULT_USER_GROUPS`.
+
+The `join` trigger is Pro (`Rule::proEvents()`) and pays once ever (no reference). The member
+group must not have `accesscp` (`Settings::validateMembershipGroup()`): customers add themselves
+to it. The controller has no user parameter, the same rule as GraphQL.
 
 ### Install seeds a disabled rule
 
@@ -229,6 +249,12 @@ exists and is documented as a trade rather than a safety feature: `markAsComplet
   Anything Pointz has to clean up outside its own tables on a user delete needs a `Gc::EVENT_RUN`
   pass as well as the element hook. The orphan prune skips codes under an hour old because
   `issue()` saves the Commerce code before Pointz's row.
+- **User groups go straight into the table in the checks** (`makeGroup()`), since saving one
+  writes project config. Craft reads groups from the table, so nothing can tell. Over HTTP,
+  `security.php` points the web server at its group with a temporary `config/pointz.php`, which
+  it deletes on shutdown.
+- **Craft 5's `asSuccess()` JSON has no `success` key.** The membership actions add it, to match
+  the cart actions.
 - **Campaign isn't in the harness.** Its check `eval`s an empty `FormsService` and raises the
   class-level event by name.
 - **Dispatch has no "subscribed" event**, and its CSV import goes through the same `subscribe()`.
@@ -245,9 +271,9 @@ No local PHP on this Mac. Everything runs inside the plugin-testing container:
 
 ```sh
 docker exec -w /var/www/html ddev-plugin-testing-web \
-  php /var/www/craft-pointz/tests/integration/checks.php          # 127 checks
+  php /var/www/craft-pointz/tests/integration/checks.php          # 137 checks
 docker exec -w /var/www/html ddev-plugin-testing-web \
-  php /var/www/craft-pointz/tests/integration/security.php        # 11, a guest vs the signed-in customer over HTTP
+  php /var/www/craft-pointz/tests/integration/security.php        # 15, a guest vs the signed-in customer over HTTP
 docker exec -w /var/www/html ddev-plugin-testing-web \
   php /var/www/craft-pointz/tests/integration/graphql.php         # 24, one child process per schema, caching ON
 docker exec -w /sites/craft-pointz ddev-phpstan-runner-web \
