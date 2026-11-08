@@ -16,6 +16,7 @@ use craft\models\UserGroup;
 use DateTime;
 use DateTimeZone;
 use justinholtweb\pointz\db\Table;
+use justinholtweb\pointz\errors\PointzException;
 use justinholtweb\pointz\events\MembershipEvent;
 use justinholtweb\pointz\Plugin;
 
@@ -165,11 +166,11 @@ class Membership extends Component
             return false;
         }
 
-        if ($this->isMember($user)) {
-            return true;
-        }
-
-        $this->_assign($user->id, array_merge($this->_groupIds($user->id), [$group->id]), $source);
+        $this->_locked($user->id, function() use ($user, $group, $source) {
+            if (!$this->isMember($user)) {
+                $this->_assign($user->id, array_merge($this->_groupIds($user->id), [$group->id]), $source);
+            }
+        });
 
         return $this->isMember($user);
     }
@@ -188,11 +189,11 @@ class Membership extends Component
             return false;
         }
 
-        if (!$this->isMember($user)) {
-            return true;
-        }
-
-        $this->_assign($user->id, array_values(array_diff($this->_groupIds($user->id), [$group->id])), $source);
+        $this->_locked($user->id, function() use ($user, $group, $source) {
+            if ($this->isMember($user)) {
+                $this->_assign($user->id, array_values(array_diff($this->_groupIds($user->id), [$group->id])), $source);
+            }
+        });
 
         return !$this->isMember($user);
     }
@@ -259,6 +260,29 @@ class Membership extends Component
     private function _wantsToJoin(mixed $value): bool
     {
         return is_string($value) && in_array(strtolower(trim($value)), ['1', 'on', 'yes', 'true'], true);
+    }
+
+    /**
+     * Runs a read-then-write of the user's groups under `pointz:membership:<userId>`.
+     * `assignUserToGroups()` takes the *whole* list, so without the lock two requests for the same
+     * customer could each write back a list missing the other's change, and a double-clicked join
+     * would lose the race on Craft's unique index and answer with an error. Rewards can't double
+     * either way: that index lets only one insert through, and only it raises the join.
+     */
+    private function _locked(int $userId, callable $fn): void
+    {
+        $mutex = Craft::$app->getMutex();
+        $lock = "pointz:membership:$userId";
+
+        if (!$mutex->acquire($lock, Plugin::getInstance()->getSettings()->lockTimeout)) {
+            throw new PointzException("Could not lock the membership of user $userId.");
+        }
+
+        try {
+            $fn();
+        } finally {
+            $mutex->release($lock);
+        }
     }
 
     /**
