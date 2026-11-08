@@ -1870,8 +1870,118 @@ try {
         $row = array_values(array_filter($couponsService->getSummary($storeId), static fn(array $row) => $row['ruleId'] === $indexRule->id))[0] ?? null;
 
         return $used === [$indexB->id] && $all === 2 && $imported === 0
-            && $row === ['ruleId' => $indexRule->id, 'issued' => 2, 'used' => 1, 'issuedThisMonth' => 2, 'usedThisMonth' => 1]
+            && $row === ['ruleId' => $indexRule->id, 'issued' => 2, 'used' => 1, 'issuedToday' => 2, 'usedToday' => 1, 'issued7' => 2, 'used7' => 1, 'issued30' => 2, 'used30' => 1, 'issuedThisMonth' => 2, 'usedThisMonth' => 1]
             ?: json_encode(['used' => $used, 'all' => $all, 'imported' => $imported, 'row' => $row]);
+    });
+
+    check('the summary counts today, the last 7 and 30 days, this month and overall', function() use ($couponsService, $storeId) {
+        $rule = makeRule('periodCoupon', ['event' => Rule::EVENT_CUSTOM, 'eventHandle' => 'periodCoupon', 'currency' => Rule::CURRENCY_COUPON, 'couponAmount' => 5, 'enabled' => false]);
+        $holder = makeUser('periods');
+        $tz = new DateTimeZone(Craft::$app->getTimeZone());
+        $noon = (new DateTime('now', $tz))->setTime(12, 0);
+        $ages = [0, 3, 10, 40];
+        $expected = ['issuedToday' => 0, 'issued7' => 0, 'issued30' => 0, 'issuedThisMonth' => 0];
+
+        foreach ($ages as $age) {
+            $coupon = $couponsService->issue($rule, $holder, $storeId);
+            $created = (clone $noon)->modify("-$age days");
+            $values = ['dateCreated' => craft\helpers\Db::prepareDateForDb($created)];
+
+            // The one issued three days ago was used the same day.
+            if ($age === 3) {
+                $values += ['status' => 'used', 'dateUsed' => craft\helpers\Db::prepareDateForDb($created)];
+            }
+
+            craft\helpers\Db::update(Table::COUPONS, $values, ['id' => $coupon->id]);
+            $expected['issuedToday'] += $age === 0 ? 1 : 0;
+            $expected['issued7'] += $age <= 6 ? 1 : 0;
+            $expected['issued30'] += $age <= 29 ? 1 : 0;
+            $expected['issuedThisMonth'] += $created->format('Y-m') === $noon->format('Y-m') ? 1 : 0;
+        }
+
+        $usedThisMonth = (clone $noon)->modify('-3 days')->format('Y-m') === $noon->format('Y-m') ? 1 : 0;
+        $row = array_values(array_filter($couponsService->getSummary($storeId), static fn(array $row) => $row['ruleId'] === $rule->id))[0] ?? [];
+
+        return ($row['issued'] ?? null) === 4 && $row['used'] === 1
+            && $row['issuedToday'] === $expected['issuedToday'] && $row['usedToday'] === 0
+            && $row['issued7'] === $expected['issued7'] && $row['used7'] === 1
+            && $row['issued30'] === $expected['issued30'] && $row['used30'] === 1
+            && $row['issuedThisMonth'] === $expected['issuedThisMonth'] && $row['usedThisMonth'] === $usedThisMonth
+            ?: json_encode(['row' => $row, 'expected' => $expected]);
+    });
+
+    check('the reminders due today are listed with their kind, and listing them sends nothing', function() use ($couponsService, $storeId) {
+        $rule = makeRule('dueCoupon', ['event' => Rule::EVENT_CUSTOM, 'eventHandle' => 'dueCoupon', 'currency' => Rule::CURRENCY_COUPON, 'couponAmount' => 5, 'enabled' => false]);
+        $holder = makeUser('due');
+        $at = static fn(string $when) => craft\helpers\Db::prepareDateForDb(new DateTime($when));
+        $set = static function(int $id, ?string $remind, string $kind, ?string $expires) use ($at) {
+            craft\helpers\Db::update(Table::COUPONS, [
+                'dateRemind' => $remind ? $at($remind) : null,
+                'reminders' => $remind ? craft\helpers\Json::encode([['date' => $at($remind), 'kind' => $kind]]) : null,
+                'dateExpires' => $expires ? $at($expires) : null,
+            ], ['id' => $id]);
+        };
+
+        $expiring = $couponsService->issue($rule, $holder, $storeId);
+        $unused = $couponsService->issue($rule, $holder, $storeId);
+        $later = $couponsService->issue($rule, $holder, $storeId);
+        $set($expiring->id, '-1 hour', 'expiry', '+10 days');
+        $set($unused->id, '-1 hour', 'issued', null);
+        $set($later->id, '+3 days', 'expiry', '+10 days');
+
+        $due = [];
+
+        foreach ($couponsService->getDueReminders(null, $storeId) as $item) {
+            $due[$item['coupon']->id] = $item['kind'];
+        }
+
+        $untouched = $couponsService->getCouponById($expiring->id)->dateRemind !== null;
+
+        return ($due[$expiring->id] ?? null) === 'expiry' && ($due[$unused->id] ?? null) === 'issued' && !isset($due[$later->id]) && $untouched
+            ?: json_encode(['due' => $due, 'untouched' => $untouched]);
+    });
+
+    check('the going-out-today panel renders the due reminders with their customers', function() use ($couponsService, $plugin, $storeId) {
+        $view = Craft::$app->getView();
+        $view->setTemplateMode(craft\web\View::TEMPLATE_MODE_CP);
+        $reminders = $couponsService->getDueReminders(null, $storeId);
+        $users = [];
+
+        foreach ($reminders as $item) {
+            $users[$item['coupon']->userId] ??= Craft::$app->getUsers()->getUserById($item['coupon']->userId);
+        }
+
+        $html = $view->renderTemplate('pointz/coupons/_due', [
+            'birthdays' => [],
+            'expiry' => array_values(array_filter($reminders, static fn(array $item) => $item['kind'] === 'expiry')),
+            'issued' => array_values(array_filter($reminders, static fn(array $item) => $item['kind'] === 'issued')),
+            'users' => array_filter($users),
+            'rules' => [],
+            'store' => Commerce::getInstance()->getStores()->getStoreById($storeId),
+            'plugin' => $plugin,
+        ]);
+        $first = $reminders[0]['coupon'] ?? null;
+
+        return $first !== null && str_contains($html, 'Going out today') && str_contains($html, $first->code) ?: 'panel missing codes';
+    });
+
+    check('the ledger filters by part of an email and by a range of days', function() use ($ledger, $storeId) {
+        $mine = makeUser('ledgerSearch');
+        $other = makeUser('ledgerOther');
+        $old = $ledger->credit($mine->id, $storeId, Rule::CURRENCY_POINTS, 5, ['kind' => Transaction::KIND_ADJUST, 'note' => 'old']);
+        $new = $ledger->credit($mine->id, $storeId, Rule::CURRENCY_POINTS, 7, ['kind' => Transaction::KIND_ADJUST, 'note' => 'new']);
+        $ledger->credit($other->id, $storeId, Rule::CURRENCY_POINTS, 9, ['kind' => Transaction::KIND_ADJUST]);
+        craft\helpers\Db::update(Table::TRANSACTIONS, ['dateCreated' => craft\helpers\Db::prepareDateForDb(new DateTime('-20 days'))], ['id' => $old->id]);
+        $ids = static fn(array $criteria) => array_map('intval', $ledger->getTransactionsQuery($criteria + ['storeId' => $storeId])->select(['id'])->column());
+
+        $byEmail = $ids(['search' => strtoupper(explode('@', $mine->email)[0])]);
+        $recent = $ids(['search' => $mine->email, 'dateFrom' => new DateTime('-2 days')]);
+        $older = $ids(['search' => $mine->email, 'dateFrom' => new DateTime('-30 days'), 'dateTo' => new DateTime('-10 days')]);
+        $wildcard = $ids(['search' => '%']);
+        sort($byEmail);
+
+        return $byEmail === [$old->id, $new->id] && $recent === [$new->id] && $older === [$old->id] && !in_array($new->id, $wildcard, true)
+            ?: json_encode(['email' => $byEmail, 'recent' => $recent, 'older' => $older, 'wildcard' => count($wildcard)]);
     });
 
     check('the coupons index and rule templates compile', function() {
@@ -1881,6 +1991,7 @@ try {
         $twig = Craft::$app->getView()->getTwig();
         $twig->load('pointz/coupons/_index');
         $twig->load('pointz/rules/_edit');
+        $twig->load('pointz/ledger/_index');
 
         return true;
     });
@@ -2466,16 +2577,22 @@ try {
         $later->setFieldValue($field, '1985-12-25');
         Craft::$app->getElements()->saveElement($later);
 
+        $previewed = array_map(static fn(array $item) => $item['user']->id, $rewards->getDueBirthdays($today, $storeId));
         $paid = $rewards->runBirthdays($today);
         $again = $rewards->runBirthdays($today);
+        $afterwards = array_map(static fn(array $item) => $item['user']->id, $rewards->getDueBirthdays($today, $storeId));
         $leap = $rewards->birthdayThisYear('2000-02-29', $today)->format('m-d');
 
         $dueCoupons = $couponsService->getCoupons(['userId' => $due->id]);
         $laterCoupons = $couponsService->getCoupons(['userId' => $later->id]);
 
+        // The preview lists who the sweep will pay, pays nothing itself (the sweep still paid one),
+        // and drops them once they've been paid.
+        $listed = in_array($due->id, $previewed, true) && !in_array($later->id, $previewed, true) && !in_array($due->id, $afterwards, true);
+
         return $paid === 1 && $again === 0 && count($dueCoupons) === 1 && $laterCoupons === [] && $leap === '02-28'
-            && $dueCoupons[0]->reference === 'birthday:2026'
-            ?: json_encode(['paid' => $paid, 'again' => $again, 'due' => count($dueCoupons), 'later' => count($laterCoupons), 'leap' => $leap]);
+            && $dueCoupons[0]->reference === 'birthday:2026' && $listed
+            ?: json_encode(['paid' => $paid, 'again' => $again, 'due' => count($dueCoupons), 'later' => count($laterCoupons), 'leap' => $leap, 'previewed' => $previewed, 'afterwards' => $afterwards]);
     });
 
     check('a late-December birthday missed by the sweep is still paid in January, against last year', function() use ($rewards, $couponsService) {

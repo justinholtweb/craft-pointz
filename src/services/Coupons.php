@@ -448,6 +448,55 @@ class Coupons extends Component
     }
 
     /**
+     * The reminders the sweep will send by `$by` — the end of today unless told otherwise — without
+     * sending them: for the control panel's "going out today" panel. Each is the reminder the sweep
+     * would pick, `Coupon::REMIND_EXPIRY` or `REMIND_ISSUED`.
+     *
+     * @return array<int, array{coupon: Coupon, kind: string}>
+     */
+    public function getDueReminders(?DateTime $by = null, ?int $storeId = null): array
+    {
+        $tz = new DateTimeZone(Craft::$app->getTimeZone());
+        $by ??= (new DateTime('now', $tz))->setTime(23, 59, 59);
+        $now = Db::prepareDateForDb(new DateTime());
+
+        $query = $this->_query()
+            ->where(['status' => Coupon::STATUS_ACTIVE])
+            ->andWhere(['not', ['dateRemind' => null]])
+            ->andWhere(['<=', 'dateRemind', Db::prepareDateForDb($by)])
+            ->andWhere(['or', ['dateExpires' => null], ['>', 'dateExpires', $now]])
+            ->orderBy(['dateRemind' => SORT_ASC, 'id' => SORT_ASC]);
+
+        if ($storeId) {
+            $query->andWhere(['storeId' => $storeId]);
+        }
+
+        $due = [];
+
+        foreach ($query->all() as $row) {
+            $coupon = new Coupon($row);
+            $kind = Coupon::REMIND_EXPIRY;
+
+            foreach ($coupon->getReminderSchedule() as $reminder) {
+                if ($reminder['date'] > $by) {
+                    break;
+                }
+
+                $kind = $reminder['kind'];
+            }
+
+            // What the sweep sends for an expiry reminder on a code with no expiry: the unused one.
+            if ($kind === Coupon::REMIND_EXPIRY && !$coupon->dateExpires) {
+                $kind = Coupon::REMIND_ISSUED;
+            }
+
+            $due[] = ['coupon' => $coupon, 'kind' => $kind];
+        }
+
+        return $due;
+    }
+
+    /**
      * Sends the reminders that are due: before a code expires, and at the offsets after issue its
      * rule (or its import) gave it. A reminder is stamped as sent whether Pointz sent it or a
      * handler took it over, so it goes out once — and one that fails to send is put back, so the
@@ -802,23 +851,39 @@ class Coupons extends Component
     }
 
     /**
-     * Codes issued and used per rule, this month and overall, for the top of the coupons index.
-     * Imported codes, which have no rule, are one row with a null `ruleId`.
+     * Codes issued and used per rule, today, over the last 7 and 30 days, this month and
+     * overall. Days are the system's time zone: *today* starts at midnight, and the last 7 days
+     * are today and the six before it. Imported codes, which have no rule, are one row with a null
+     * `ruleId`.
      *
-     * @return array<int, array{ruleId: int|null, issued: int, used: int, issuedThisMonth: int, usedThisMonth: int}>
+     * @return array<int, array{ruleId: int|null, issued: int, used: int, issuedToday: int, usedToday: int, issued7: int, used7: int, issued30: int, used30: int, issuedThisMonth: int, usedThisMonth: int}>
      */
-    public function getSummary(?int $storeId = null): array
+    public function getSummary(?int $storeId = null, ?DateTime $now = null): array
     {
-        $monthStart = Db::prepareDateForDb((new DateTime('first day of this month midnight', new DateTimeZone(Craft::$app->getTimeZone()))));
+        $tz = new DateTimeZone(Craft::$app->getTimeZone());
+        $today = (clone ($now ?? new DateTime('now', $tz)))->setTimezone($tz)->setTime(0, 0);
+        $since = [
+            'Today' => $today,
+            '7' => (clone $today)->modify('-6 days'),
+            '30' => (clone $today)->modify('-29 days'),
+            'ThisMonth' => (clone $today)->modify('first day of this month'),
+        ];
+
+        $select = [
+            'ruleId',
+            'issued' => new Expression('COUNT(*)'),
+            'used' => new Expression('SUM(CASE WHEN [[status]] = :used THEN 1 ELSE 0 END)', [':used' => Coupon::STATUS_USED]),
+        ];
+
+        foreach ($since as $suffix => $from) {
+            $key = strtolower($suffix);
+            $date = Db::prepareDateForDb($from);
+            $select["issued$suffix"] = new Expression("SUM(CASE WHEN [[dateCreated]] >= :i$key THEN 1 ELSE 0 END)", [":i$key" => $date]);
+            $select["used$suffix"] = new Expression("SUM(CASE WHEN [[status]] = :s$key AND [[dateUsed]] >= :u$key THEN 1 ELSE 0 END)", [":s$key" => Coupon::STATUS_USED, ":u$key" => $date]);
+        }
 
         $query = (new Query())
-            ->select([
-                'ruleId',
-                'issued' => new Expression('COUNT(*)'),
-                'used' => new Expression('SUM(CASE WHEN [[status]] = :used THEN 1 ELSE 0 END)', [':used' => Coupon::STATUS_USED]),
-                'issuedThisMonth' => new Expression('SUM(CASE WHEN [[dateCreated]] >= :monthA THEN 1 ELSE 0 END)', [':monthA' => $monthStart]),
-                'usedThisMonth' => new Expression('SUM(CASE WHEN [[status]] = :usedB AND [[dateUsed]] >= :monthB THEN 1 ELSE 0 END)', [':usedB' => Coupon::STATUS_USED, ':monthB' => $monthStart]),
-            ])
+            ->select($select)
             ->from(Table::COUPONS)
             ->groupBy(['ruleId']);
 
@@ -826,13 +891,20 @@ class Coupons extends Component
             $query->where(['storeId' => $storeId]);
         }
 
-        return array_map(static fn(array $row) => [
-            'ruleId' => $row['ruleId'] !== null ? (int)$row['ruleId'] : null,
-            'issued' => (int)$row['issued'],
-            'used' => (int)$row['used'],
-            'issuedThisMonth' => (int)$row['issuedThisMonth'],
-            'usedThisMonth' => (int)$row['usedThisMonth'],
-        ], $query->all());
+        return array_map(static function(array $row) use ($since) {
+            $out = [
+                'ruleId' => $row['ruleId'] !== null ? (int)$row['ruleId'] : null,
+                'issued' => (int)$row['issued'],
+                'used' => (int)$row['used'],
+            ];
+
+            foreach (array_keys($since) as $suffix) {
+                $out["issued$suffix"] = (int)$row["issued$suffix"];
+                $out["used$suffix"] = (int)$row["used$suffix"];
+            }
+
+            return $out;
+        }, $query->all());
     }
 
     /**

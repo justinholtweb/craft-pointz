@@ -253,6 +253,12 @@ exists and is documented as a trade rather than a safety feature: `markAsComplet
   writes project config. Craft reads groups from the table, so nothing can tell. Over HTTP,
   `security.php` points the web server at its group with a temporary `config/pointz.php`, which
   it deletes on shutdown.
+- **A CP button that downloads goes to `actionUrl()`, not `url()`.** The ledger's Export CSV linked
+  to `url('pointz/ledger/export')`, which has no CP route, and 404ed from 5.0 to 5.4 without a
+  check noticing. `tests/integration/cp.php` now opens the CP screens over HTTP as an admin.
+- **A template rendered by an action needs `View::TEMPLATE_MODE_CP` passed explicitly.** An
+  action called on the site URL renders in site mode and can't find `pointz/…` templates.
+  `CouponsController::actionDue()` passes it.
 - **Craft 5's `asSuccess()` JSON has no `success` key.** The membership actions add it, to match
   the cart actions.
 - **Campaign isn't in the harness.** Its check `eval`s an empty `FormsService` and raises the
@@ -271,11 +277,13 @@ No local PHP on this Mac. Everything runs inside the plugin-testing container:
 
 ```sh
 docker exec -w /var/www/html ddev-plugin-testing-web \
-  php /var/www/craft-pointz/tests/integration/checks.php          # 137 checks
+  php /var/www/craft-pointz/tests/integration/checks.php          # 141 checks
 docker exec -w /var/www/html ddev-plugin-testing-web \
   php /var/www/craft-pointz/tests/integration/security.php        # 15, a guest vs the signed-in customer over HTTP
 docker exec -w /var/www/html ddev-plugin-testing-web \
   php /var/www/craft-pointz/tests/integration/graphql.php         # 24, one child process per schema, caching ON
+docker exec -w /var/www/html ddev-plugin-testing-web \
+  php /var/www/craft-pointz/tests/integration/cp.php              # 8, the CP screens over HTTP as an admin
 docker exec -w /sites/craft-pointz ddev-phpstan-runner-web \
   bash -c 'vendor/bin/phpstan analyse --memory-limit=1G && vendor/bin/ecs check'
 docker exec -w /var/www/html ddev-plugin-testing-web \

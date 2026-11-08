@@ -17,6 +17,15 @@
   (`site`, `registration` or `admin`), for subscribing a new member to a list or sending your own
   welcome email.
 - The customer's balance page shows when they joined, how, or when they left.
+- **Ledger filters** for part of a customer's email and a range of days, alongside store, kind and
+  currency. The CSV export takes the same filters.
+  ([#5](https://github.com/justinholtweb/craft-pointz/issues/5))
+- **Coupons:** codes issued and used today and over the last 7 and 30 days, next to this month and
+  overall.
+- **Going out today** on the Coupons screen: the birthday rewards, expiry reminders and reminders
+  after issue that the next sweep will send, with the customers behind each.
+  `Rewards::getDueBirthdays()` and `Coupons::getDueReminders()` give the same answer to your own
+  code, and send nothing.
 
 ### Fixed
 
@@ -27,6 +36,8 @@
   discounts that Pointz has no record of; on an existing install the first sweep clears the
   backlog, or run `pointz/sweep/orphaned-codes`. A soft delete leaves the codes alone, so a restored
   customer still has them. ([#4](https://github.com/justinholtweb/craft-pointz/issues/4))
+- The ledger's **Export CSV** button linked to a control-panel page that doesn't exist, and gave a
+  404. It now goes to the export action.
 
 ## 5.4.0 - 2026-11-03
 

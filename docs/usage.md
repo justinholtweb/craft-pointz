@@ -397,14 +397,23 @@ decision in Commerce's own screens.
   points and in money at the top.
 - **A customer's page** — their balance, where it sits (the lots, in the order a spend will take
   them), their coupons, their whole history, a box for moving the balance by hand, and a
-  *Rebuild from the ledger* button, which is the support answer to "the number looks wrong".
-- **Ledger** — every movement, filterable by store, kind and currency, exportable as CSV on Pro.
+  *Rebuild from the ledger* button, which is the support answer to "the number looks wrong". With
+  a member group set, it also says when they joined the programme and how, or when they left.
+- **Ledger** — every movement, filterable by store, kind, currency, part of a customer's email and
+  a range of days (both ends included, in the system's time zone). The CSV export on Pro takes
+  exactly the filters on screen.
 - **Coupons** *(Pro)* — every code Pointz has issued or taken over, across customers: code, owner,
   rule, value, issued, expires, status, and the order a used code went on. Search by any part of a
   code or of a customer's email, which is how support finds a code read out over the phone; filter
   by status, rule and store; revoke a live code from the list. Above it, codes issued and used per
-  rule, this month and overall. Imported codes, and codes from a rule since deleted, are grouped as
-  one row.
+  rule today, over the last 7 and 30 days, this month and overall. Imported codes, and codes from a
+  rule since deleted, are grouped as one row.
+
+  At the top, **Going out today**: what the next sweep sends — birthday rewards, expiry reminders
+  and reminders after issue — with the customers behind each number. It is worked out after the
+  page loads, because finding today's birthdays reads every customer who has one, as the sweep
+  does. It's a forecast: a per-customer cap or a `beforeReward` handler can still stop a birthday
+  reward on the night.
 - **Order edit screen** — what that order earned and spent, and a link to the customer's balance.
 - **Dashboard widget** *(Pro)* — the unredeemed liability, in points and in money.
 

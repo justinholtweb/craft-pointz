@@ -417,8 +417,13 @@ class Ledger extends Component
     }
 
     /**
+     * `search` matches part of a customer's email, without regard to case, the way the coupons
+     * index does. `dateFrom` is inclusive and `dateTo` exclusive, so a day's range is midnight to
+     * the next midnight.
+     *
      * @param array{userId?: int, storeId?: int, currency?: string, kind?: string|string[],
-     *              orderId?: int, batchId?: string, status?: string} $criteria
+     *              orderId?: int, batchId?: string, status?: string, search?: string|null,
+     *              dateFrom?: DateTime|null, dateTo?: DateTime|null} $criteria
      */
     public function getTransactionsQuery(array $criteria = []): Query
     {
@@ -428,6 +433,26 @@ class Ledger extends Component
             if (isset($criteria[$key])) {
                 $query->andWhere([$key => $criteria[$key]]);
             }
+        }
+
+        $search = trim((string)($criteria['search'] ?? ''));
+
+        if ($search !== '') {
+            // A subquery rather than a join, so the ledger's columns stay unqualified.
+            $byEmail = (new Query())
+                ->select(['id'])
+                ->from(\craft\db\Table::USERS)
+                ->where(new Expression('LOWER([[email]]) LIKE :email', [':email' => '%' . strtolower(addcslashes($search, '%_\\')) . '%']));
+
+            $query->andWhere(['userId' => $byEmail]);
+        }
+
+        if (($criteria['dateFrom'] ?? null) instanceof DateTime) {
+            $query->andWhere(['>=', 'dateCreated', Db::prepareDateForDb($criteria['dateFrom'])]);
+        }
+
+        if (($criteria['dateTo'] ?? null) instanceof DateTime) {
+            $query->andWhere(['<', 'dateCreated', Db::prepareDateForDb($criteria['dateTo'])]);
         }
 
         return $query;

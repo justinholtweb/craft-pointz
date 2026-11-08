@@ -6,15 +6,25 @@
 {% set filters = { store: store.handle, status: status, rule: ruleId, search: search } %}
 
 {% block content %}
+    <div id="pointz-due" class="pane" style="margin-bottom: 24px;" aria-live="polite">
+        <p class="light">{{ "Working out what goes out today…"|t('pointz') }}</p>
+    </div>
+
     {% if summary|length %}
-        <table class="data fullwidth" style="margin-bottom: 24px;">
+        {% set periods = {
+            Today: "Today"|t('pointz'),
+            7: "Last 7 days"|t('pointz'),
+            30: "Last 30 days"|t('pointz'),
+            ThisMonth: "This month"|t('pointz'),
+            '': "Overall"|t('pointz'),
+        } %}
+        <table class="data fullwidth collapsible" style="margin-bottom: 24px;">
             <thead>
                 <tr>
                     <th scope="col">{{ "Rule"|t('pointz') }}</th>
-                    <th scope="col">{{ "Issued this month"|t('pointz') }}</th>
-                    <th scope="col">{{ "Used this month"|t('pointz') }}</th>
-                    <th scope="col">{{ "Issued"|t('pointz') }}</th>
-                    <th scope="col">{{ "Used"|t('pointz') }}</th>
+                    {% for label in periods %}
+                        <th scope="col">{{ label }} <span class="light">{{ "issued / used"|t('pointz') }}</span></th>
+                    {% endfor %}
                 </tr>
             </thead>
             <tbody>
@@ -30,10 +40,14 @@
                                 <a href="{{ url('pointz/coupons', filters|merge({ rule: 'imported', page: null })) }}">{{ "Imported, or from a deleted rule"|t('pointz') }}</a>
                             {% endif %}
                         </th>
-                        <td>{{ row.issuedThisMonth|number }}</td>
-                        <td>{{ row.usedThisMonth|number }}</td>
-                        <td>{{ row.issued|number }}</td>
-                        <td>{{ row.used|number }}{% if row.issued %} <span class="light">({{ (row.used / row.issued * 100)|round }}%)</span>{% endif %}</td>
+                        {% for suffix, label in periods %}
+                            {% set issued = attribute(row, 'issued' ~ suffix) %}
+                            {% set used = attribute(row, 'used' ~ suffix) %}
+                            <td data-title="{{ label }}">
+                                {{ issued|number }} / {{ used|number }}
+                                {% if suffix == '' and issued %}<span class="light">({{ (used / issued * 100)|round }}%)</span>{% endif %}
+                            </td>
+                        {% endfor %}
                     </tr>
                 {% endfor %}
             </tbody>
@@ -168,3 +182,11 @@
     });
     {% endjs %}
 {% endif %}
+
+{% js %}
+    Craft.sendActionRequest('GET', 'pointz/coupons/due', { params: { store: {{ store.handle|json_encode|raw }} } })
+        .then(function(response) { document.getElementById('pointz-due').innerHTML = response.data; })
+        .catch(function() {
+            document.getElementById('pointz-due').innerHTML = '<p class="error">' + {{ "Couldn’t work out what goes out today."|t('pointz')|json_encode|raw }} + '</p>';
+        });
+{% endjs %}

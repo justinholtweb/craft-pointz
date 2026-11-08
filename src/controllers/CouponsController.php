@@ -6,7 +6,9 @@ use Craft;
 use craft\commerce\elements\Order;
 use craft\commerce\Plugin as Commerce;
 use craft\elements\User;
+use craft\helpers\ArrayHelper;
 use craft\web\Controller;
+use craft\web\View;
 use justinholtweb\pointz\models\Coupon;
 use justinholtweb\pointz\Plugin;
 use yii\web\ForbiddenHttpException;
@@ -101,5 +103,38 @@ class CouponsController extends Controller
             'canRevoke' => Craft::$app->getUser()->checkPermission('pointz-adjustBalances'),
             'plugin' => $plugin,
         ]);
+    }
+
+    /**
+     * What the next sweep sends today: birthday rewards, expiry reminders and reminders after
+     * issue, with the customers behind each. Loaded after the coupons index has rendered, because
+     * finding today's birthdays walks every customer with one, as the sweep itself does.
+     */
+    public function actionDue(): Response
+    {
+        $plugin = Plugin::getInstance();
+        $stores = Commerce::getInstance()->getStores();
+        $storeHandle = $this->request->getParam('store');
+        $store = $storeHandle ? $stores->getStoreByHandle($storeHandle) : $stores->getPrimaryStore();
+
+        $reminders = $plugin->getCoupons()->getDueReminders(null, $store?->id);
+        $users = [];
+        $userIds = array_unique(array_map(static fn(array $due) => $due['coupon']->userId, $reminders));
+
+        if ($userIds) {
+            foreach (User::find()->id($userIds)->status(null)->all() as $user) {
+                $users[$user->id] = $user;
+            }
+        }
+
+        return $this->renderTemplate('pointz/coupons/_due', [
+            'birthdays' => $plugin->getRewards()->getDueBirthdays(null, $store?->id),
+            'expiry' => array_values(array_filter($reminders, static fn(array $due) => $due['kind'] === Coupon::REMIND_EXPIRY)),
+            'issued' => array_values(array_filter($reminders, static fn(array $due) => $due['kind'] === Coupon::REMIND_ISSUED)),
+            'users' => $users,
+            'rules' => ArrayHelper::index($plugin->getRules()->getAllRules($store?->id), 'id'),
+            'store' => $store,
+            'plugin' => $plugin,
+        ], View::TEMPLATE_MODE_CP);
     }
 }

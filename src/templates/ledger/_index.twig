@@ -3,9 +3,12 @@
 {% set title = "Ledger"|t('pointz') %}
 {% set selectedSubnavItem = 'ledger' %}
 
+{# Only the filters that are set, so the URLs stay short. #}
+{% set params = filters|filter(v => v is not same as('')) %}
+
 {% block actionButton %}
     {% if plugin.isPro() %}
-        <a class="btn" href="{{ url('pointz/ledger/export', { store: store.handle, kind: kind, currency: currency }) }}">{{ "Export CSV"|t('pointz') }}</a>
+        <a class="btn" href="{{ actionUrl('pointz/ledger/export', params) }}">{{ "Export CSV"|t('pointz') }}</a>
     {% endif %}
 {% endblock %}
 
@@ -24,18 +27,32 @@
         <select name="kind" class="select">
             <option value="">{{ "Every movement"|t('pointz') }}</option>
             {% for value, label in kinds %}
-                <option value="{{ value }}"{{ value == kind ? ' selected' : '' }}>{{ label }}</option>
+                <option value="{{ value }}"{{ value == filters.kind ? ' selected' : '' }}>{{ label }}</option>
             {% endfor %}
         </select>
 
         <select name="currency" class="select">
             <option value="">{{ "Points and credit"|t('pointz') }}</option>
             {% for value, label in currencies %}
-                <option value="{{ value }}"{{ value == currency ? ' selected' : '' }}>{{ label }}</option>
+                <option value="{{ value }}"{{ value == filters.currency ? ' selected' : '' }}>{{ label }}</option>
             {% endfor %}
         </select>
 
+        <input type="search" name="search" class="text" value="{{ filters.search }}" placeholder="{{ "Customer email"|t('pointz') }}" aria-label="{{ "Customer email"|t('pointz') }}">
+
+        <label class="flex" style="gap: 6px;">
+            <span class="light">{{ "From"|t('pointz') }}</span>
+            <input type="date" name="from" class="text" value="{{ filters.from }}">
+        </label>
+        <label class="flex" style="gap: 6px;">
+            <span class="light">{{ "To"|t('pointz') }}</span>
+            <input type="date" name="to" class="text" value="{{ filters.to }}">
+        </label>
+
         <button type="submit" class="btn">{{ "Filter"|t('pointz') }}</button>
+        {% if params|keys|filter(k => k != 'store')|length %}
+            <a href="{{ url('pointz/ledger', { store: store.handle }) }}">{{ "Clear"|t('pointz') }}</a>
+        {% endif %}
     </form>
 
     {% if transactions|length %}
@@ -84,15 +101,15 @@
         {% if pages > 1 %}
             <nav class="flex" style="margin-top: 14px;">
                 {% if page > 1 %}
-                    <a class="btn" href="{{ url('pointz/ledger', { store: store.handle, kind: kind, currency: currency, page: page - 1 }) }}">{{ "Previous"|t('pointz') }}</a>
+                    <a class="btn" href="{{ url('pointz/ledger', params|merge({ page: page - 1 })) }}">{{ "Previous"|t('pointz') }}</a>
                 {% endif %}
                 <span class="light" style="align-self: center;">{{ "Page {page} of {pages}"|t('pointz', { page: page, pages: pages }) }}</span>
                 {% if page < pages %}
-                    <a class="btn" href="{{ url('pointz/ledger', { store: store.handle, kind: kind, currency: currency, page: page + 1 }) }}">{{ "Next"|t('pointz') }}</a>
+                    <a class="btn" href="{{ url('pointz/ledger', params|merge({ page: page + 1 })) }}">{{ "Next"|t('pointz') }}</a>
                 {% endif %}
             </nav>
         {% endif %}
     {% else %}
-        <p>{{ "Nothing has moved yet."|t('pointz') }}</p>
+        <p>{{ params|keys|filter(k => k != 'store')|length ? "Nothing matches those filters."|t('pointz') : "Nothing has moved yet."|t('pointz') }}</p>
     {% endif %}
 {% endblock %}

@@ -1,0 +1,64 @@
+{# Going out today: rendered on its own and loaded into the coupons index after it has drawn. #}
+{% set limit = 50 %}
+{% set groups = [
+    {
+        label: "Birthday rewards"|t('pointz'),
+        note: "Customers whose birthday rule hasn’t paid them this year. A cap or a handler can still stop one on the night."|t('pointz'),
+        rows: birthdays|map(due => {
+            user: due.user,
+            what: due.rule.name,
+            detail: due.birthday|date('short'),
+        }),
+    },
+    {
+        label: "Expiry reminders"|t('pointz'),
+        note: "Codes whose expiry reminder falls due by the end of today."|t('pointz'),
+        rows: expiry|map(due => {
+            user: users[due.coupon.userId] ?? null,
+            what: due.coupon.code ~ ' · ' ~ due.coupon.valueLabel,
+            detail: "expires {date}"|t('pointz', { date: due.coupon.dateExpires|date('short') }),
+        }),
+    },
+    {
+        label: "Reminders after issue"|t('pointz'),
+        note: "Codes still unused a set number of days after they were issued."|t('pointz'),
+        rows: issued|map(due => {
+            user: users[due.coupon.userId] ?? null,
+            what: due.coupon.code ~ ' · ' ~ due.coupon.valueLabel,
+            detail: "issued {date}"|t('pointz', { date: due.coupon.dateCreated|date('short') }),
+        }),
+    },
+] %}
+
+<h2>{{ "Going out today"|t('pointz') }}</h2>
+<p class="light">{{ "What the next sweep sends, as things stand. Schedule `pointz/sweep/run` daily for it to go."|t('pointz')|md(inlineOnly=true) }}</p>
+
+<div class="flex" style="gap: 28px; flex-wrap: wrap; align-items: flex-start;">
+    {% for group in groups %}
+        <div style="flex: 1 1 260px; min-width: 0;">
+            <div class="light smalltext">{{ group.label }}</div>
+            <div style="font-size: 26px;">{{ group.rows|length|number }}</div>
+            {% if group.rows|length %}
+                <details>
+                    <summary class="light smalltext">{{ "Who"|t('pointz') }}</summary>
+                    <p class="light smalltext">{{ group.note }}</p>
+                    <ul style="margin-top: 6px;">
+                        {% for row in group.rows|slice(0, limit) %}
+                            <li style="margin-bottom: 4px;">
+                                {% if row.user %}
+                                    <a href="{{ url('pointz/balances/' ~ row.user.id, { store: store.handle }) }}">{{ row.user.email }}</a>
+                                {% else %}
+                                    <span class="light">{{ "Deleted customer"|t('pointz') }}</span>
+                                {% endif %}
+                                <span class="light">— {{ row.what }}, {{ row.detail }}</span>
+                            </li>
+                        {% endfor %}
+                    </ul>
+                    {% if group.rows|length > limit %}
+                        <p class="light smalltext">{{ "and {count} more"|t('pointz', { count: (group.rows|length - limit)|number }) }}</p>
+                    {% endif %}
+                </details>
+            {% endif %}
+        </div>
+    {% endfor %}
+</div>

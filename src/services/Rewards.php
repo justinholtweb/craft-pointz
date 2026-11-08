@@ -361,19 +361,88 @@ class Rewards extends Component
      */
     public function runBirthdays(?DateTime $today = null): int
     {
+        $count = 0;
+
+        foreach ($this->_birthdayCandidates($today) as [$storeId, $fieldRules, $user, $birthday]) {
+            foreach ($fieldRules as $rule) {
+                if (!Plugin::getInstance()->getSettings()->earningEnabled) {
+                    break;
+                }
+
+                $result = $this->grant($rule, $user, $storeId, 'birthday:' . $birthday->format('Y'), [], [
+                    'note' => $this->_noteFor(Rule::EVENT_BIRTHDAY, $rule),
+                ]);
+
+                if ($result !== null) {
+                    $count++;
+
+                    if ($rule->stopProcessing) {
+                        break;
+                    }
+                }
+            }
+        }
+
+        return $count;
+    }
+
+    /**
+     * What `runBirthdays()` would pay today, without paying it: for the control panel's "going out
+     * today" panel. A rule that hasn't paid this customer this year and whose conditions match is
+     * counted as paying — the `beforeReward` event, a zero award or a per-customer cap can still
+     * stop it on the night.
+     *
+     * @return array<int, array{rule: Rule, user: User, storeId: int, birthday: DateTime}>
+     */
+    public function getDueBirthdays(?DateTime $today = null, ?int $storeId = null): array
+    {
+        if (!Plugin::getInstance()->getSettings()->earningEnabled) {
+            return [];
+        }
+
+        $due = [];
+
+        foreach ($this->_birthdayCandidates($today, $storeId) as [$candidateStoreId, $fieldRules, $user, $birthday]) {
+            foreach ($fieldRules as $rule) {
+                if (!$rule->matchesUser($user) || $this->hasRewarded($rule, $user->id, 'birthday:' . $birthday->format('Y'))) {
+                    continue;
+                }
+
+                $due[] = ['rule' => $rule, 'user' => $user, 'storeId' => $candidateStoreId, 'birthday' => $birthday];
+
+                if ($rule->stopProcessing) {
+                    break;
+                }
+            }
+        }
+
+        return $due;
+    }
+
+    /**
+     * Every customer whose birthday falls in the grace window, with the rules that read their
+     * birthday field — what the sweep and its preview both walk.
+     *
+     * @return \Generator<int, array{0: int, 1: Rule[], 2: User, 3: DateTime}>
+     */
+    private function _birthdayCandidates(?DateTime $today = null, ?int $onlyStoreId = null): \Generator
+    {
         if (!Plugin::getInstance()->isPro() || !Plugin::commerceIsReady()) {
-            return 0;
+            return;
         }
 
         $today ??= new DateTime('now', new DateTimeZone(Craft::$app->getTimeZone()));
         $today = (clone $today)->setTime(0, 0);
-        $count = 0;
+        $earliest = (clone $today)->sub(new DateInterval('P' . self::BIRTHDAY_GRACE_DAYS . 'D'));
 
         foreach (Commerce::getInstance()->getStores()->getAllStores() as $store) {
-            $rules = Plugin::getInstance()->getRules()->getActiveRules($store->id, Rule::EVENT_BIRTHDAY);
+            if ($onlyStoreId !== null && $store->id !== $onlyStoreId) {
+                continue;
+            }
+
             $byField = [];
 
-            foreach ($rules as $rule) {
+            foreach (Plugin::getInstance()->getRules()->getActiveRules($store->id, Rule::EVENT_BIRTHDAY) as $rule) {
                 if ($rule->birthdayField) {
                     $byField[$rule->birthdayField][] = $rule;
                 }
@@ -391,36 +460,14 @@ class Rewards extends Component
                     /** @var User $user */
                     $birthday = $this->lastBirthday($user->getFieldValue($field), $today);
 
-                    if ($birthday === null) {
+                    if ($birthday === null || $birthday < $earliest) {
                         continue;
                     }
 
-                    if ($birthday < (clone $today)->sub(new DateInterval('P' . self::BIRTHDAY_GRACE_DAYS . 'D'))) {
-                        continue;
-                    }
-
-                    foreach ($fieldRules as $rule) {
-                        if (!Plugin::getInstance()->getSettings()->earningEnabled) {
-                            break;
-                        }
-
-                        $result = $this->grant($rule, $user, $store->id, 'birthday:' . $birthday->format('Y'), [], [
-                            'note' => $this->_noteFor(Rule::EVENT_BIRTHDAY, $rule),
-                        ]);
-
-                        if ($result !== null) {
-                            $count++;
-
-                            if ($rule->stopProcessing) {
-                                break;
-                            }
-                        }
-                    }
+                    yield [$store->id, $fieldRules, $user, $birthday];
                 }
             }
         }
-
-        return $count;
     }
 
     /**
