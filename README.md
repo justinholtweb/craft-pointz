@@ -150,6 +150,7 @@ the same window.
 ```sh
 php craft pointz/sweep/run                 # schedule this daily: expiry, birthdays, coupons
 php craft pointz/accounts/recalculate      # rebuild every balance from the ledger
+php craft pointz/sweep/orphaned-codes      # delete leftover codes of deleted customers (also part of run)
 php craft pointz/grant/to-group customers 250
 php craft pointz/backfill/plan --from=2026-01-01
 ```

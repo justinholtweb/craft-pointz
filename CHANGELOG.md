@@ -1,5 +1,17 @@
 # Release Notes for Pointz
 
+## Unreleased
+
+### Fixed
+
+- Deleting a customer left their coupon codes on the rule's discount in Commerce for good. A hard
+  delete now takes the customer's codes out of Commerce too, and removes a replaced discount that
+  was only being kept for them. Craft's garbage collection deletes trashed users without any
+  element event, so each GC run — and `pointz/sweep/run` — now deletes codes on Pointz's
+  discounts that Pointz has no record of; on an existing install the first sweep clears the
+  backlog, or run `pointz/sweep/orphaned-codes`. A soft delete leaves the codes alone, so a restored
+  customer still has them. ([#4](https://github.com/justinholtweb/craft-pointz/issues/4))
+
 ## 5.4.0 - 2026-11-03
 
 ### Added

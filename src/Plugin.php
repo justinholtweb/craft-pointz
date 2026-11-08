@@ -15,6 +15,7 @@ use craft\commerce\services\OrderHistories;
 use craft\commerce\services\Transactions as CommerceTransactions;
 use craft\elements\User;
 use craft\events\DefineRulesEvent;
+use craft\events\ElementEvent;
 use craft\events\ExecuteGqlQueryEvent;
 use craft\events\ModelEvent;
 use craft\events\RegisterComponentTypesEvent;
@@ -26,6 +27,8 @@ use craft\events\RegisterUrlRulesEvent;
 use craft\events\RegisterUserPermissionsEvent;
 use craft\helpers\UrlHelper;
 use craft\services\Dashboard;
+use craft\services\Elements;
+use craft\services\Gc;
 use craft\services\Gql;
 use craft\services\SystemMessages;
 use craft\services\UserPermissions;
@@ -138,6 +141,7 @@ class Plugin extends BasePlugin
         $this->_registerOrderEvents();
         $this->_registerRefundReversal();
         $this->_registerSignupBonus();
+        $this->_registerUserDeletion();
         $this->_registerRewardTriggers();
         $this->_registerOrderPanel();
         $this->_registerGql();
@@ -555,6 +559,60 @@ class Plugin extends BasePlugin
                     Plugin::getInstance()->getEarning()->awardSignup($user);
                 } catch (\Throwable $e) {
                     Craft::error('Pointz could not award the signup bonus: ' . $e->getMessage(), 'pointz');
+                }
+            }
+        );
+    }
+
+    /**
+     * A customer's coupon codes leave Commerce with them. Pointz's own rows cascade with the user;
+     * Commerce's codes don't, and would sit on the rule's discount for good.
+     *
+     * A hard delete through the elements service is caught either side of its commit. Craft's
+     * garbage collection deletes trashed users with a plain `DELETE` and no element event, so its
+     * run is followed by a prune of codes nobody owns any more.
+     */
+    private function _registerUserDeletion(): void
+    {
+        Event::on(
+            User::class,
+            Element::EVENT_BEFORE_DELETE,
+            static function(ModelEvent $event) {
+                /** @var User $user */
+                $user = $event->sender;
+
+                try {
+                    Plugin::getInstance()->getCoupons()->rememberCodesOf($user);
+                } catch (\Throwable $e) {
+                    Craft::error('Pointz could not read a deleted user\'s coupons: ' . $e->getMessage(), 'pointz');
+                }
+            }
+        );
+
+        Event::on(
+            Elements::class,
+            Elements::EVENT_AFTER_DELETE_ELEMENT,
+            static function(ElementEvent $event) {
+                if (!$event->element instanceof User) {
+                    return;
+                }
+
+                try {
+                    Plugin::getInstance()->getCoupons()->deleteCodesOf($event->element);
+                } catch (\Throwable $e) {
+                    Craft::error('Pointz could not delete a deleted user\'s coupon codes: ' . $e->getMessage(), 'pointz');
+                }
+            }
+        );
+
+        Event::on(
+            Gc::class,
+            Gc::EVENT_RUN,
+            static function() {
+                try {
+                    Plugin::getInstance()->getCoupons()->pruneOrphanedCodes();
+                } catch (\Throwable $e) {
+                    Craft::error('Pointz could not prune orphaned coupon codes: ' . $e->getMessage(), 'pointz');
                 }
             }
         );

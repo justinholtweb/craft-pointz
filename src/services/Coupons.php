@@ -68,8 +68,23 @@ class Coupons extends Component
      */
     private const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
+    /**
+     * How old a Commerce code on a managed discount has to be before the prune may treat it as
+     * orphaned. `issue()` saves the Commerce code a moment before Pointz's own row, and a prune
+     * running in between must not take a code that is about to be recorded.
+     */
+    public const ORPHAN_GRACE_SECONDS = 3600;
+
     /** @var int[]|null */
     private ?array $_managedDiscountIds = null;
+
+    /**
+     * The codes of users being hard-deleted, read before the delete cascades Pointz's rows away
+     * and acted on once it has committed.
+     *
+     * @var array<int, array{couponIds: int[], discountIds: int[]}>
+     */
+    private array $_deleting = [];
 
     /**
      * The discount a coupon rule's codes go on, created if the rule has none yet — or if its value
@@ -641,6 +656,110 @@ class Coupons extends Component
     }
 
     /**
+     * The `beforeDelete` half of a user's hard delete: notes which Commerce codes the user holds,
+     * because once the delete commits, `pointz_coupons` has cascaded and nothing says whose they
+     * were. A soft delete is left alone — the user can be restored, codes and all, and Craft's
+     * garbage collection deletes them later without any element event, which `pruneOrphanedCodes()`
+     * covers.
+     */
+    public function rememberCodesOf(User $user): void
+    {
+        if (!$user->hardDelete || !$user->id) {
+            return;
+        }
+
+        $rows = (new Query())
+            ->select(['couponId', 'discountId'])
+            ->from(Table::COUPONS)
+            ->where(['userId' => $user->id])
+            ->all();
+
+        if (!$rows) {
+            return;
+        }
+
+        $this->_deleting[$user->id] = [
+            'couponIds' => array_values(array_unique(array_map('intval', array_filter(array_column($rows, 'couponId'))))),
+            'discountIds' => array_values(array_unique(array_map('intval', array_filter(array_column($rows, 'discountId'))))),
+        ];
+    }
+
+    /**
+     * The after-commit half: deletes the noted codes from Commerce, then any replaced discount
+     * that was only being kept for them.
+     *
+     * @return int How many Commerce codes were deleted.
+     */
+    public function deleteCodesOf(User $user): int
+    {
+        $noted = $this->_deleting[$user->id] ?? null;
+        unset($this->_deleting[$user->id]);
+
+        if ($noted === null || !Plugin::commerceIsReady()) {
+            return 0;
+        }
+
+        // A handler that cancelled the delete, or a rollback, leaves the user — and their codes.
+        if ((new Query())->from(CraftTable::ELEMENTS)->where(['id' => $user->id])->exists()) {
+            return 0;
+        }
+
+        $count = $this->_deleteCommerceCoupons($noted['couponIds']);
+        $this->_managedDiscountIds = null;
+
+        foreach ($noted['discountIds'] as $discountId) {
+            $this->deleteDiscountIfIdle($discountId);
+        }
+
+        return $count;
+    }
+
+    /**
+     * Deletes Commerce codes on discounts Pointz manages that have no `pointz_coupons` row — the
+     * codes of customers removed by Craft's garbage collection, which deletes the user without an
+     * element event, and of installs from before Pointz deleted them itself. Such a code could
+     * never be redeemed (`enforceOwnership()` refuses a code Pointz has no record of); it only
+     * cluttered the discount's Coupons tab.
+     *
+     * A code added to a Pointz discount by hand in Commerce has no row either, and goes too: it
+     * was never usable, for the same reason.
+     *
+     * @return int How many Commerce codes were deleted.
+     */
+    public function pruneOrphanedCodes(?int $limit = null): int
+    {
+        if (!Plugin::commerceIsReady()) {
+            return 0;
+        }
+
+        $this->_managedDiscountIds = null;
+        $discountIds = $this->getManagedDiscountIds();
+
+        if (!$discountIds) {
+            return 0;
+        }
+
+        $cutoff = (new DateTime('now', new DateTimeZone('UTC')))->modify('-' . self::ORPHAN_GRACE_SECONDS . ' seconds');
+
+        $known = (new Query())
+            ->select(['couponId'])
+            ->from(Table::COUPONS)
+            ->where(['not', ['couponId' => null]]);
+
+        $ids = (new Query())
+            ->select(['id'])
+            ->from(CommerceTable::COUPONS)
+            ->where(['discountId' => $discountIds])
+            ->andWhere(['not in', 'id', $known])
+            ->andWhere(['<', 'dateCreated', Db::prepareDateForDb($cutoff)])
+            ->orderBy(['id' => SORT_ASC])
+            ->limit($limit)
+            ->column();
+
+        return $this->_deleteCommerceCoupons(array_map('intval', $ids));
+    }
+
+    /**
      * The query behind the coupons index: every code Pointz has issued or adopted, across
      * customers. `search` matches a code, or a customer's email, in part and without regard to
      * case — support looking up a code read out over the phone.
@@ -959,6 +1078,24 @@ class Coupons extends Component
         }
 
         Commerce::getInstance()->getCoupons()->deleteCouponById($couponId);
+    }
+
+    /**
+     * Deletes many Commerce codes at once. Straight to the table, in chunks: Commerce's own
+     * `deleteCouponById()` is a record delete with no events, and a store with a few thousand
+     * leftover codes shouldn't pay a query apiece.
+     *
+     * @param int[] $couponIds
+     */
+    private function _deleteCommerceCoupons(array $couponIds): int
+    {
+        $count = 0;
+
+        foreach (array_chunk($couponIds, 500) as $chunk) {
+            $count += Db::delete(CommerceTable::COUPONS, ['id' => $chunk]);
+        }
+
+        return $count;
     }
 
     /**

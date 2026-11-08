@@ -40,6 +40,7 @@ class SweepController extends Controller
         $birthdays = $plugin->getRewards()->runBirthdays();
         $couponsExpired = $plugin->getCoupons()->expireDue($this->limit);
         $reminded = $plugin->getCoupons()->remindDue($this->limit);
+        $orphans = $plugin->getCoupons()->pruneOrphanedCodes();
         $discounts = $plugin->getCoupons()->cleanUpDiscounts();
 
         $this->stdout("Released: $promoted\n", Console::FG_GREEN);
@@ -48,6 +49,7 @@ class SweepController extends Controller
         $this->stdout("Birthday rewards: $birthdays\n", Console::FG_GREEN);
         $this->stdout("Coupons expired: $couponsExpired\n", Console::FG_GREEN);
         $this->stdout("Coupon reminders: $reminded\n", Console::FG_GREEN);
+        $this->stdout("Orphaned codes removed: $orphans\n", Console::FG_GREEN);
         $this->stdout("Spent discounts removed: $discounts\n", Console::FG_GREEN);
 
         return ExitCode::OK;
@@ -73,9 +75,22 @@ class SweepController extends Controller
         $coupons = Plugin::getInstance()->getCoupons();
         $expired = $coupons->expireDue($this->limit);
         $reminded = $coupons->remindDue($this->limit);
+        $orphans = $coupons->pruneOrphanedCodes();
         $discounts = $coupons->cleanUpDiscounts();
 
-        $this->stdout("Expired $expired coupon(s), sent $reminded reminder(s), removed $discounts discount(s).\n", Console::FG_GREEN);
+        $this->stdout("Expired $expired coupon(s), sent $reminded reminder(s), removed $orphans orphaned code(s) and $discounts discount(s).\n", Console::FG_GREEN);
+
+        return ExitCode::OK;
+    }
+
+    /**
+     * Deletes Commerce codes on Pointz's discounts that Pointz has no record of — left behind by
+     * customers deleted before 5.4.1, or by Craft's garbage collection. Part of `run` too.
+     */
+    public function actionOrphanedCodes(): int
+    {
+        $count = Plugin::getInstance()->getCoupons()->pruneOrphanedCodes($this->limit);
+        $this->stdout("Removed $count orphaned code(s).\n", Console::FG_GREEN);
 
         return ExitCode::OK;
     }

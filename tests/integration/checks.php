@@ -1765,6 +1765,46 @@ try {
         return $fresh->status === 'revoked' && !$fresh->getIsUsable() ?: 'status ' . $fresh->status;
     });
 
+    $leaverRule = makeRule('leaverCoupon', ['event' => Rule::EVENT_CUSTOM, 'eventHandle' => 'leaver', 'currency' => Rule::CURRENCY_COUPON, 'couponAmount' => 5, 'enabled' => false]);
+    $commerceCodeExists = static fn(?int $id) => $id !== null && (new Query())->from(craft\commerce\db\Table::COUPONS)->where(['id' => $id])->exists();
+
+    check('hard-deleting a customer deletes their codes from Commerce too', function() use ($couponsService, $leaverRule, $commerceCodeExists, $storeId) {
+        $leaver = makeUser('leaver');
+        $stayer = makeUser('stayer');
+        $theirs = $couponsService->issue($leaverRule, $leaver, $storeId);
+        $kept = $couponsService->issue($leaverRule, $stayer, $storeId);
+
+        Craft::$app->getElements()->deleteElement($leaver, true);
+
+        return !$commerceCodeExists($theirs->couponId) && $commerceCodeExists($kept->couponId)
+            ?: json_encode(['theirs' => $commerceCodeExists($theirs->couponId), 'kept' => $commerceCodeExists($kept->couponId)]);
+    });
+
+    check('soft-deleting a customer keeps their codes, so a restore gets them back', function() use ($couponsService, $leaverRule, $commerceCodeExists, $storeId) {
+        $trashed = makeUser('trashed');
+        $coupon = $couponsService->issue($leaverRule, $trashed, $storeId);
+
+        Craft::$app->getElements()->deleteElement($trashed);
+
+        return $commerceCodeExists($coupon->couponId) && $couponsService->getCouponById($coupon->id) !== null ?: 'code gone on a soft delete';
+    });
+
+    check('the prune deletes codes left by garbage collection, but not one issued a moment ago', function() use ($couponsService, $leaverRule, $commerceCodeExists, $storeId) {
+        $collected = makeUser('collected');
+        $old = $couponsService->issue($leaverRule, $collected, $storeId);
+        $recent = $couponsService->issue($leaverRule, $collected, $storeId);
+        $owned = $couponsService->issue($leaverRule, makeUser('owner'), $storeId);
+        $stale = craft\helpers\Db::prepareDateForDb((new DateTime('now', new DateTimeZone('UTC')))->modify('-2 hours'));
+        craft\helpers\Db::update(craft\commerce\db\Table::COUPONS, ['dateCreated' => $stale], ['id' => [$old->couponId, $owned->couponId]]);
+
+        // What Craft's GC does: a plain delete on the elements table, no element events.
+        craft\helpers\Db::delete(craft\db\Table::ELEMENTS, ['id' => $collected->id]);
+        $pruned = $couponsService->pruneOrphanedCodes();
+
+        return $pruned >= 1 && !$commerceCodeExists($old->couponId) && $commerceCodeExists($recent->couponId) && $commerceCodeExists($owned->couponId)
+            ?: json_encode(['pruned' => $pruned, 'old' => $commerceCodeExists($old->couponId), 'recent' => $commerceCodeExists($recent->couponId), 'owned' => $commerceCodeExists($owned->couponId)]);
+    });
+
     // ---------------------------------------------------------------------------------------
     section('Coupons index, test sends and code checks');
 

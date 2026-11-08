@@ -45,6 +45,8 @@ Anything that cannot survive that rule does not ship.
 | Status changes | `OrderHistories::EVENT_ORDER_STATUS_CHANGE` | Award if `awardOn` is `status` and the handle matches. |
 | Refund saved | `Transactions::EVENT_AFTER_SAVE_TRANSACTION` | Reverse pro rata; optionally return what the order spent. |
 | New user | `User::EVENT_AFTER_PROPAGATE` with `isNew` | The signup bonus. |
+| User hard-deleted | `User::EVENT_BEFORE_DELETE` + `Elements::EVENT_AFTER_DELETE_ELEMENT` | Note the user's Commerce codes before the cascade, delete them after the commit. Soft deletes are left alone. |
+| GC runs | `Gc::EVENT_RUN` | `pruneOrphanedCodes()`: GC hard-deletes trashed users with a plain `DELETE`, no element event. |
 | Points arrive | `Ledger::EVENT_AFTER_COMMIT` (and `Lifecycle::_release()`) | Evaluate threshold rules. *After the commit*, because a threshold spends and the ledger can't be re-entered from inside its own lock. |
 | Discount matches | `Discounts::EVENT_DISCOUNT_MATCHES_ORDER` | A Pointz coupon code only matches its owner's order, and only while live. |
 | Order completes | `Order::EVENT_AFTER_COMPLETE_ORDER` | Also marks the order's Pointz coupon used. |
@@ -222,6 +224,11 @@ exists and is documented as a trade rather than a safety feature: `markAsComplet
   may do the same.
 - **Mailer `EVENT_BEFORE_SEND` passes a `yii\mail\MailEvent`**, not Craft's. A handler type-hinted
   with `craft\events\MailEvent` throws, which looks exactly like a failed send.
+- **Craft's GC deletes trashed elements with `Db::delete(Table::ELEMENTS)`**, so no element event
+  fires and `pointz_coupons` cascades away silently. Commerce's codes don't cascade with the user.
+  Anything Pointz has to clean up outside its own tables on a user delete needs a `Gc::EVENT_RUN`
+  pass as well as the element hook. The orphan prune skips codes under an hour old because
+  `issue()` saves the Commerce code before Pointz's row.
 - **Campaign isn't in the harness.** Its check `eval`s an empty `FormsService` and raises the
   class-level event by name.
 - **Dispatch has no "subscribed" event**, and its CSV import goes through the same `subscribe()`.
@@ -238,7 +245,7 @@ No local PHP on this Mac. Everything runs inside the plugin-testing container:
 
 ```sh
 docker exec -w /var/www/html ddev-plugin-testing-web \
-  php /var/www/craft-pointz/tests/integration/checks.php          # 124 checks
+  php /var/www/craft-pointz/tests/integration/checks.php          # 127 checks
 docker exec -w /var/www/html ddev-plugin-testing-web \
   php /var/www/craft-pointz/tests/integration/security.php        # 11, a guest vs the signed-in customer over HTTP
 docker exec -w /var/www/html ddev-plugin-testing-web \
